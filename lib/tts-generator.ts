@@ -1,0 +1,411 @@
+import { promises as fs } from 'fs';
+import path from 'path';
+import { TextToSpeechClient } from '@google-cloud/text-to-speech';
+import { SubtitleSegment, TTSOptions } from './types';
+
+// Default TTS options
+const DEFAULT_TTS_OPTIONS: Required<TTSOptions> = {
+  languageCode: 'pl-PL',
+  voiceName: 'pl-PL-Standard-G',
+  audioEncoding: 'MP3',
+  speakingRate: 1.0,
+  pitch: 0.0,
+};
+
+/**
+ * Get Google Cloud TTS client
+ */
+function getTTSClient(): TextToSpeechClient {
+  return new TextToSpeechClient();
+}
+
+/**
+ * Generate TTS audio for a single text segment
+ */
+export async function generateTTS(
+  text: string,
+  outputPath: string,
+  options?: TTSOptions
+): Promise<void> {
+  console.log(`[TTS] Generating audio for: "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"`);
+  const startTime = Date.now();
+
+  const client = getTTSClient();
+  const opts = { ...DEFAULT_TTS_OPTIONS, ...options };
+
+  const request = {
+    input: { text },
+    voice: {
+      languageCode: opts.languageCode,
+      name: opts.voiceName,
+    },
+    audioConfig: {
+      audioEncoding: opts.audioEncoding,
+      speakingRate: opts.speakingRate,
+      pitch: opts.pitch,
+    },
+  };
+
+  const [response] = await client.synthesizeSpeech(request);
+  
+  // Ensure directory exists
+  const dir = path.dirname(outputPath);
+  await fs.mkdir(dir, { recursive: true });
+
+  // Write audio to file
+  await fs.writeFile(outputPath, response.audioContent as Buffer, 'binary');
+  
+  const duration = Date.now() - startTime;
+  console.log(`[TTS] Generated audio in ${duration}ms: ${outputPath}`);
+}
+
+/**
+ * Generate TTS audio for multiple subtitle segments with timing
+ * This generates individual audio files for each segment
+ * Adjusts speaking rate dynamically to match expected durations
+ */
+export async function generateTTSSegments(
+  segments: SubtitleSegment[],
+  outputDir: string,
+  options?: TTSOptions,
+  onProgress?: (current: number, total: number) => void
+): Promise<string[]> {
+  console.log(`[TTS] Generating ${segments.length} TTS segments to ${outputDir}`);
+  const startTime = Date.now();
+  const audioFiles: string[] = [];
+
+  // Ensure output directory exists
+  await fs.mkdir(outputDir, { recursive: true });
+
+  const { getAudioDuration } = await import('./audio-processor');
+  const baseSpeakingRate = options?.speakingRate ?? DEFAULT_TTS_OPTIONS.speakingRate;
+  const syncThreshold = 0.5; // Maximum allowed difference in seconds before adjusting
+  const maxSpeakingRate = 2.0; // Maximum speaking rate (Google TTS limit)
+  const minSpeakingRate = 0.25; // Minimum speaking rate (Google TTS limit)
+
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i];
+    if (!segment || !segment.text || segment.text.trim().length === 0) {
+      console.warn(`[TTS] Empty segment ${i + 1}/${segments.length}, generating silence instead`);
+      // Generate a short silence file for empty segments to maintain timing
+      const outputPath = path.join(outputDir, `segment_${i.toString().padStart(4, '0')}.mp3`);
+      const { insertSilence } = await import('./audio-processor');
+      const expectedDuration = segment?.end && segment?.start ? segment.end - segment.start : 0.1;
+      await insertSilence(outputPath, Math.max(0.1, expectedDuration));
+      audioFiles.push(outputPath);
+      if (onProgress) {
+        onProgress(i + 1, segments.length);
+      }
+      continue;
+    }
+
+    const outputPath = path.join(outputDir, `segment_${i.toString().padStart(4, '0')}.mp3`);
+    const expectedDuration = segment.end - segment.start;
+
+    console.log(`[TTS] Generating segment ${i + 1}/${segments.length}: "${segment.text.substring(0, 50)}${segment.text.length > 50 ? '...' : ''}"`);
+
+    // Generate TTS with current options
+    let currentOptions = { ...options };
+    let actualDuration = 0;
+    let attempts = 0;
+    const maxAttempts = 3;
+
+    while (attempts < maxAttempts) {
+      await generateTTS(segment.text, outputPath, currentOptions);
+      actualDuration = await getAudioDuration(outputPath);
+      
+      const durationDiff = actualDuration - expectedDuration;
+
+      // If duration is close enough or shorter than expected, we're done
+      // We never slow down audio that's already fast enough
+      if (durationDiff <= syncThreshold || expectedDuration <= 0 || durationDiff < 0) {
+        if (durationDiff < 0) {
+          console.log(
+            `[TTS] Segment ${i + 1}/${segments.length}: Audio is faster than expected ` +
+            `(expected: ${expectedDuration.toFixed(2)}s, actual: ${actualDuration.toFixed(2)}s, ` +
+            `diff: ${durationDiff.toFixed(2)}s). Keeping as-is (no slowdown).`
+          );
+        }
+        break;
+      }
+
+      // Only speed up if actualDuration > expectedDuration
+      // Calculate new speaking rate to match expected duration
+      // speakingRate is inversely proportional to duration
+      // If actualDuration > expectedDuration, we need to speak faster (higher rate)
+      const rateAdjustment = actualDuration / expectedDuration;
+      const newSpeakingRate = (currentOptions.speakingRate ?? baseSpeakingRate) * rateAdjustment;
+
+      // Clamp speaking rate to valid range
+      const clampedRate = Math.max(minSpeakingRate, Math.min(maxSpeakingRate, newSpeakingRate));
+      
+      // If we've hit the max speaking rate and it's still not fast enough, stop trying
+      if (clampedRate >= maxSpeakingRate && actualDuration > expectedDuration) {
+        console.warn(
+          `[TTS] Segment ${i + 1}/${segments.length}: Hit max speaking rate (${maxSpeakingRate}) ` +
+          `but still too long (expected: ${expectedDuration.toFixed(2)}s, actual: ${actualDuration.toFixed(2)}s, ` +
+          `diff: ${durationDiff.toFixed(2)}s). Keeping this version and will align subsequent segments.`
+        );
+        break;
+      }
+      
+      console.log(
+        `[TTS] Segment ${i + 1}/${segments.length}: Duration too long ` +
+        `(expected: ${expectedDuration.toFixed(2)}s, actual: ${actualDuration.toFixed(2)}s, ` +
+        `diff: ${durationDiff.toFixed(2)}s). Speeding up from ${(currentOptions.speakingRate ?? baseSpeakingRate).toFixed(2)} to ${clampedRate.toFixed(2)}`
+      );
+
+      currentOptions = { ...currentOptions, speakingRate: clampedRate };
+      attempts++;
+    }
+
+    // Log final status
+    const finalDiff = actualDuration - expectedDuration;
+    if (finalDiff > syncThreshold) {
+      console.warn(
+        `[TTS] Segment ${i + 1}/${segments.length}: Still longer than expected after ${attempts} attempts ` +
+        `(expected: ${expectedDuration.toFixed(2)}s, actual: ${actualDuration.toFixed(2)}s, ` +
+        `diff: ${finalDiff.toFixed(2)}s). Subsequent segments will be aligned to compensate.`
+      );
+    } else if (finalDiff >= -syncThreshold && finalDiff <= syncThreshold) {
+      console.log(
+        `[TTS] Segment ${i + 1}/${segments.length}: Synced ` +
+        `(expected: ${expectedDuration.toFixed(2)}s, actual: ${actualDuration.toFixed(2)}s)`
+      );
+    }
+
+    audioFiles.push(outputPath);
+
+    if (onProgress) {
+      onProgress(i + 1, segments.length);
+    }
+  }
+
+  const duration = Date.now() - startTime;
+  console.log(`[TTS] Generated ${audioFiles.length} segment files from ${segments.length} segments in ${duration}ms`);
+  
+  if (audioFiles.length !== segments.length) {
+    console.error(`[TTS] WARNING: Generated ${audioFiles.length} files but expected ${segments.length} segments!`);
+  }
+  
+  return audioFiles;
+}
+
+/**
+ * Generate complete TTS audio with silence periods
+ * This creates a single audio file with proper timing
+ */
+export async function generateTTSWithTiming(
+  segments: SubtitleSegment[],
+  outputPath: string,
+  options?: TTSOptions,
+  onProgress?: (progress: number) => void
+): Promise<void> {
+  console.log(`[TTS] Generating TTS with timing to ${outputPath}`);
+  const startTime = Date.now();
+  
+  const { insertSilence, concatenateAudioFiles } = await import('./audio-processor');
+  
+  // Create temporary directory for segments
+  const tempDir = path.join(path.dirname(outputPath), 'temp_segments');
+  await fs.mkdir(tempDir, { recursive: true });
+  console.log(`[TTS] Created temp directory: ${tempDir}`);
+
+  try {
+    // Generate TTS for each segment
+    console.log(`[TTS] Starting generation of ${segments.length} segments...`);
+    const segmentFiles = await generateTTSSegments(
+      segments,
+      tempDir,
+      options,
+      (current, total) => {
+        if (onProgress) {
+          onProgress((current / total) * 50); // First 50% for TTS generation
+        }
+      }
+    );
+
+    // Verify all segments were generated
+    if (segmentFiles.length !== segments.length) {
+      throw new Error(
+        `[TTS] Mismatch: Generated ${segmentFiles.length} segment files but expected ${segments.length} segments`
+      );
+    }
+    console.log(`[TTS] Successfully generated ${segmentFiles.length} segment files`);
+
+    // Measure actual durations and calculate cumulative drift compensation
+    const { getAudioDuration } = await import('./audio-processor');
+    const actualDurations: number[] = [];
+    let cumulativeDrift = 0; // Track cumulative timing drift
+
+    for (let i = 0; i < segmentFiles.length; i++) {
+      try {
+        const actualDuration = await getAudioDuration(segmentFiles[i]);
+        actualDurations.push(actualDuration);
+        const expectedDuration = segments[i].end - segments[i].start;
+        const segmentDrift = actualDuration - expectedDuration;
+        cumulativeDrift += segmentDrift;
+      } catch (error) {
+        console.error(`[TTS] Error getting duration for segment ${i + 1}: ${segmentFiles[i]}`, error);
+        throw error;
+      }
+    }
+
+    console.log(`[TTS] Measured durations for ${actualDurations.length} segments. Cumulative drift: ${cumulativeDrift.toFixed(2)}s`);
+
+    // Create audio files with silence, adjusting gaps to compensate for drift
+    const audioWithSilence: string[] = [];
+    let currentDrift = 0; // Track drift up to current position
+
+    console.log(`[TTS] Processing ${segments.length} segments for final output`);
+    console.log(`[TTS] Segment files available: ${segmentFiles.length}`);
+
+    if (segmentFiles.length === 0) {
+      throw new Error('[TTS] No segment files were generated!');
+    }
+
+    for (let i = 0; i < segments.length; i++) {
+      // Verify segment file exists
+      if (!segmentFiles[i]) {
+        throw new Error(`[TTS] Missing segment file for segment ${i + 1}/${segments.length}`);
+      }
+
+      // Add the TTS segment
+      console.log(`[TTS] Adding segment ${i + 1}/${segments.length}: ${segmentFiles[i]}`);
+      audioWithSilence.push(segmentFiles[i]);
+
+      // Update current drift based on this segment
+      const expectedDuration = segments[i].end - segments[i].start;
+      const segmentDrift = actualDurations[i] - expectedDuration;
+      currentDrift += segmentDrift;
+
+      // Calculate gap after this segment (if not the last segment)
+      if (i < segments.length - 1) {
+        const nextSegment = segments[i + 1];
+        const originalGapDuration = nextSegment.start - segments[i].end;
+        
+        // Handle overlapping segments (shouldn't happen, but handle gracefully)
+        if (originalGapDuration < 0) {
+          console.warn(
+            `[TTS] Segment ${i + 1} overlaps with segment ${i + 2}: ` +
+            `segment ${i + 1} ends at ${segments[i].end.toFixed(2)}s, ` +
+            `segment ${i + 2} starts at ${nextSegment.start.toFixed(2)}s. ` +
+            `Skipping gap insertion.`
+          );
+          // Don't add silence for overlapping segments
+        } else if (originalGapDuration > 0.01) {
+          // Only add silence if there's a meaningful gap (at least 0.01 seconds to avoid rounding issues)
+          // Adjust silence duration to compensate for drift
+          // If we're ahead (positive drift = segment took longer), reduce silence
+          // If we're behind (negative drift = segment was shorter), increase silence
+          const adjustedSilenceDuration = Math.max(0, originalGapDuration - currentDrift);
+          
+          // Calculate how much drift we actually compensated
+          // The compensation is the difference between original and adjusted gap
+          const compensatedDrift = originalGapDuration - adjustedSilenceDuration;
+          
+          // Carry forward any remaining drift that couldn't be fully compensated
+          // (e.g., if drift is 2s but gap is only 0.5s, we can only compensate 0.5s)
+          currentDrift -= compensatedDrift;
+          
+          // Only log if adjustment is significant
+          if (Math.abs(compensatedDrift) > 0.1 || Math.abs(currentDrift) > 0.1) {
+            console.log(
+              `[TTS] Gap ${i}: Original ${originalGapDuration.toFixed(2)}s, ` +
+              `adjusted to ${adjustedSilenceDuration.toFixed(2)}s ` +
+              `(compensated: ${compensatedDrift.toFixed(2)}s, remaining drift: ${currentDrift.toFixed(2)}s)`
+            );
+          }
+
+          // Only create and add silence file if duration is meaningful (> 0.01s)
+          // Zero or very small silence files can cause concatenation issues
+          if (adjustedSilenceDuration > 0.01) {
+            const silenceFile = path.join(tempDir, `silence_${i}.mp3`);
+            await insertSilence(silenceFile, adjustedSilenceDuration);
+            audioWithSilence.push(silenceFile);
+          } else {
+            console.log(`[TTS] Gap ${i}: Skipping silence insertion (duration too small: ${adjustedSilenceDuration.toFixed(3)}s)`);
+          }
+        } else if (currentDrift < -0.1) {
+          // If there's no gap but we're behind (negative drift), add silence to catch up
+          // If we're ahead (positive drift) and there's no gap, we can't reduce it, so carry it forward
+          const compensationSilence = -currentDrift; // Convert negative drift to positive silence duration
+          const wasBehind = compensationSilence;
+          
+          // Only create compensation silence if duration is meaningful
+          if (compensationSilence > 0.01) {
+            const silenceFile = path.join(tempDir, `silence_${i}_compensation.mp3`);
+            await insertSilence(silenceFile, compensationSilence);
+            audioWithSilence.push(silenceFile);
+            currentDrift = 0; // We've caught up
+            console.log(
+              `[TTS] Gap ${i}: No natural gap, adding ${compensationSilence.toFixed(2)}s compensation ` +
+              `to catch up (was behind by ${wasBehind.toFixed(2)}s)`
+            );
+          } else {
+            console.log(`[TTS] Gap ${i}: Compensation needed but duration too small (${compensationSilence.toFixed(3)}s), skipping`);
+          }
+        }
+      }
+
+      if (onProgress) {
+        onProgress(50 + ((i + 1) / segments.length) * 50); // Last 50% for silence insertion
+      }
+    }
+
+    // Validate all files exist before concatenation
+    const validFiles: string[] = [];
+    for (const file of audioWithSilence) {
+      try {
+        const stats = await fs.stat(file);
+        if (stats.size > 0) {
+          validFiles.push(file);
+        } else {
+          console.warn(`[TTS] Skipping empty file: ${file}`);
+        }
+      } catch (error) {
+        console.error(`[TTS] File not found or error accessing: ${file}`, error);
+        throw new Error(`Missing or invalid audio file: ${file}`);
+      }
+    }
+
+    console.log(`[TTS] Concatenating ${validFiles.length} valid audio files (${segments.length} segments + ${validFiles.length - segments.length} silence gaps)...`);
+    console.log(`[TTS] Expected total segments: ${segments.length}, Valid files to concatenate: ${validFiles.length}`);
+    
+    if (validFiles.length === 0) {
+      throw new Error('[TTS] No valid audio files to concatenate!');
+    }
+    
+    if (validFiles.length < segments.length) {
+      console.warn(`[TTS] WARNING: Only ${validFiles.length} valid files but ${segments.length} segments expected!`);
+    }
+    
+    await concatenateAudioFiles(validFiles, outputPath);
+    
+    const duration = Date.now() - startTime;
+    console.log(`[TTS] TTS with timing completed in ${duration}ms`);
+  } finally {
+    // Clean up temporary directory
+    try {
+      // await fs.rm(tempDir, { recursive: true, force: true });
+      console.log(`[TTS] Cleaned up temp directory: ${tempDir}`);
+    } catch (error) {
+      console.error('[TTS] Error cleaning up temp directory:', error);
+    }
+  }
+}
+
+/**
+ * Clean text for TTS (remove HTML tags, extra whitespace, etc.)
+ */
+export function cleanTextForTTS(text: string): string {
+  return text
+    .replace(/<[^>]*>/g, '') // Remove HTML tags
+    .replace(/\s+/g, ' ') // Replace multiple whitespace with single space
+    .replace(/&nbsp;/g, ' ') // Replace &nbsp;
+    .replace(/&amp;/g, '&') // Replace &amp;
+    .replace(/&lt;/g, '<') // Replace &lt;
+    .replace(/&gt;/g, '>') // Replace &gt;
+    .trim();
+}
+

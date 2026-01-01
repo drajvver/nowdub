@@ -1,0 +1,338 @@
+import { promises as fs } from 'fs';
+import path from 'path';
+import ffmpeg from 'fluent-ffmpeg';
+
+// Type assertion for fluent-ffmpeg
+const ffmpegAny = ffmpeg as any;
+
+/**
+ * Insert silence into an audio file
+ * Uses raw audio generation method (more reliable than lavfi)
+ */
+export async function insertSilence(
+  outputPath: string,
+  duration: number
+): Promise<void> {
+  console.log(`[AUDIO] Creating silence: ${duration.toFixed(3)}s -> ${outputPath}`);
+  const startTime = Date.now();
+  
+  return new Promise((resolve, reject) => {
+    // Generate raw silence bytes and encode to MP3
+    // This method is more universally supported than lavfi
+    const sampleRate = 44100;
+    const channels = 2;
+    const bytesPerSample = 2; // 16-bit = 2 bytes
+    const numSamples = Math.floor(duration * sampleRate);
+    const bufferSize = numSamples * channels * bytesPerSample;
+    
+    // Create a buffer of zeros (silence)
+    const silenceBuffer = Buffer.alloc(bufferSize, 0);
+    const tempRawFile = outputPath.replace('.mp3', '.raw');
+    
+    // Write raw audio file
+    fs.writeFile(tempRawFile, silenceBuffer)
+      .then(() => {
+        console.log(`[AUDIO] Generated ${bufferSize} bytes of raw silence`);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ffmpegAny()
+          .input(tempRawFile)
+          .inputOptions([
+            '-f', 's16le',
+            '-ar', sampleRate.toString(),
+            '-ac', channels.toString()
+          ])
+          .audioCodec('libmp3lame')
+          .audioFrequency(sampleRate)
+          .audioChannels(channels)
+          .audioBitrate('192k')
+          .on('error', (err: any) => {
+            console.error(`[AUDIO] FFmpeg error encoding silence:`, err);
+            // Clean up temp file
+            fs.unlink(tempRawFile).catch(() => {});
+            reject(new Error(`FFmpeg error: ${err.message}`));
+          })
+          .on('end', () => {
+            // Clean up temp file
+            fs.unlink(tempRawFile).catch(() => {});
+            const processingDuration = Date.now() - startTime;
+            console.log(`[AUDIO] Silence created in ${processingDuration}ms`);
+            resolve();
+          })
+          .save(outputPath);
+      })
+      .catch((writeErr) => {
+        console.error(`[AUDIO] Error writing raw silence file:`, writeErr);
+        reject(new Error(`Failed to create silence: ${writeErr.message}`));
+      });
+  });
+}
+
+/**
+ * Concatenate multiple audio files into one
+ */
+export async function concatenateAudioFiles(
+  inputFiles: string[],
+  outputPath: string
+): Promise<void> {
+  console.log(`[AUDIO] Concatenating ${inputFiles.length} audio files to ${outputPath}`);
+  const startTime = Date.now();
+  
+  return new Promise((resolve, reject) => {
+    const dir = path.dirname(outputPath);
+    
+    // Create a concat list file
+    const listFile = path.join(dir, 'concat_list.txt');
+    const listContent = inputFiles.map(file => `file '${file.replace(/\\/g, '/')}'`).join('\n');
+    
+    fs.writeFile(listFile, listContent)
+      .then(() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ffmpeg()
+          .input(listFile)
+          .inputOptions(['-f', 'concat', '-safe', '0'])
+          .audioCodec('libmp3lame')
+          .audioFrequency(44100)
+          .audioChannels(2)
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          .on('error', (err) => {
+            console.error(`[AUDIO] FFmpeg error concatenating:`, err);
+            reject(new Error(`FFmpeg error: ${err.message}`));
+          })
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          .on('end', () => {
+            // Clean up list file
+            fs.unlink(listFile).catch(() => {});
+            const duration = Date.now() - startTime;
+            console.log(`[AUDIO] Concatenated ${inputFiles.length} files in ${duration}ms`);
+            resolve();
+          })
+          .save(outputPath);
+      })
+      .catch(reject);
+  });
+}
+
+/**
+ * Apply sidechain compression to merge TTS audio with original audio
+ * The original audio will be ducked (lowered) when the TTS audio is playing
+ * When TTS is silent, the original audio returns to normal volume
+ */
+
+export async function applySidechainCompression(
+  originalAudio: string,
+  ttsAudio: string,
+  outputPath: string,
+  options?: {
+    threshold?: number; // dB threshold for compression (default: -30)
+    ratio?: number; // Compression ratio (default: 10)
+    attack?: number; // Attack time in ms (default: 10)
+    release?: number; // Release time in ms (default: 400)
+    makeupGain?: number; // Makeup gain in dB (default: 0)
+    reductionAmount?: number; // How much to reduce original (default: -15dB)
+  }
+): Promise<void> {
+  const opts = {
+    threshold: options?.threshold ?? -30,
+    ratio: options?.ratio ?? 10,
+    attack: options?.attack ?? 10,
+    release: options?.release ?? 400,
+    makeupGain: options?.makeupGain ?? 0,
+    reductionAmount: options?.reductionAmount ?? -15,
+  };
+
+  const attackSeconds = opts.attack / 1000;
+  const releaseSeconds = opts.release / 1000;
+
+  console.log(`[AUDIO] Applying sidechain compression (ducking original audio when TTS plays)...`);
+  console.log(`[AUDIO]   Original audio: ${originalAudio} (will be ducked)`);
+  console.log(`[AUDIO]   TTS audio: ${ttsAudio} (sidechain signal)`);
+  console.log(`[AUDIO]   Compression settings: Threshold=${opts.threshold}dB, Ratio=${opts.ratio}, Attack=${opts.attack}ms, Release=${opts.release}ms, Reduction=${opts.reductionAmount}dB`);
+
+  const startTime = Date.now();
+
+  return new Promise((resolve, reject) => {
+    const command = ffmpegAny()
+      .input(originalAudio)
+      .input(ttsAudio);
+
+    command.complexFilter([
+      // Normalize TTS audio first to ensure consistent sidechain signal
+      `[1:a]loudnorm=I=-16:TP=-1.5:LRA=11[tts_normalized]`,
+      
+      // Apply sidechain compression with more aggressive settings
+      `[0:a][tts_normalized]sidechaincompress=threshold=${opts.threshold}dB:ratio=${opts.ratio}:attack=${attackSeconds}:release=${releaseSeconds}:level_in=1:mix=1[ducked]`,
+      
+      // Reduce the ducked original audio volume further
+      `[ducked]volume=${opts.reductionAmount}dB[ducked_quiet]`,
+      
+      // Mix with the normalized TTS at higher volume
+      `[ducked_quiet][tts_normalized]amix=inputs=2:duration=first:dropout_transition=2:weights=1 2[mixed]`,
+      
+      // Apply limiter to prevent clipping
+      `[mixed]alimiter=limit=0.95:attack=5:release=50[limited]`,
+      
+      // Final normalization to bring up overall level without clipping
+      `[limited]loudnorm=I=-16:TP=-1.5:LRA=11`
+    ])
+      .audioCodec('libmp3lame')
+      .audioBitrate('192k')
+      .audioFrequency(44100)
+      .audioChannels(2)
+      .on('error', (err: any) => {
+        console.error(`[AUDIO] FFmpeg error applying sidechain compression:`, err);
+        reject(new Error(`FFmpeg error: ${err.message}`));
+      })
+      .on('end', () => {
+        const duration = Date.now() - startTime;
+        console.log(`[AUDIO] Sidechain compression completed in ${duration}ms: ${outputPath}`);
+        resolve();
+      })
+      .save(outputPath);
+  });
+}
+
+// export async function applySidechainCompression(
+//   originalAudio: string,
+//   ttsAudio: string,
+//   outputPath: string,
+//   options?: {
+//     threshold?: number; // dB threshold for compression (default: -20)
+//     ratio?: number; // Compression ratio (default: 4)
+//     attack?: number; // Attack time in ms (default: 20)
+//     release?: number; // Release time in ms (default: 250)
+//     makeupGain?: number; // Makeup gain in dB (default: 0)
+//   }
+// ): Promise<void> {
+//   const opts = {
+//     threshold: options?.threshold ?? -35,
+//     ratio: options?.ratio ?? 15,
+//     attack: options?.attack ?? 50, // in milliseconds
+//     release: options?.release ?? 600, // in milliseconds
+//     makeupGain: options?.makeupGain ?? 0,
+//   };
+
+//   // Convert milliseconds to seconds for FFmpeg (acompressor expects seconds)
+//   const attackSeconds = opts.attack / 1000;
+//   const releaseSeconds = opts.release / 1000;
+
+//   console.log(`[AUDIO] Applying sidechain compression (ducking original audio when TTS plays)...`);
+//   console.log(`[AUDIO]   Original audio: ${originalAudio} (will be ducked)`);
+//   console.log(`[AUDIO]   TTS audio: ${ttsAudio} (sidechain signal)`);
+//   console.log(`[AUDIO]   Compression settings: Threshold=${opts.threshold}dB, Ratio=${opts.ratio}, Attack=${opts.attack}ms (${attackSeconds}s), Release=${opts.release}ms (${releaseSeconds}s)`);
+//   const startTime = Date.now();
+
+//   return new Promise((resolve, reject) => {
+//     // Try sidechaincompress filter first (if available)
+//     // If not available, fall back to volume-based approach
+//     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+//     const command = ffmpegAny()
+//       .input(originalAudio)
+//       .input(ttsAudio);
+    
+//     // Try using sidechaincompress filter (designed for this purpose)
+//     // Syntax: [main][sidechain]sidechaincompress=threshold=X:ratio=Y:attack=Z:release=W
+//     command.complexFilter([
+//       // Use sidechaincompress: original audio (input 0) is compressed based on TTS (input 1)
+//       `[0:a][1:a]sidechaincompress=threshold=${opts.threshold}dB:ratio=${opts.ratio}:attack=${attackSeconds}:release=${releaseSeconds}[ducked_original]`,
+//       // Mix the ducked original with TTS audio
+//       `[ducked_original][1:a]amix=inputs=2:duration=first:dropout_transition=2`
+//     ])
+//       .audioCodec('libmp3lame')
+//       .audioFrequency(44100)
+//       .audioChannels(2)
+//       // eslint-disable-next-line @typescript-eslint/no-explicit-any
+//       .on('error', (err) => {
+//         console.error(`[AUDIO] FFmpeg error applying sidechain compression:`, err);
+//         reject(new Error(`FFmpeg error: ${err.message}`));
+//       })
+//       // eslint-disable-next-line @typescript-eslint/no-explicit-any
+//       .on('end', () => {
+//         const duration = Date.now() - startTime;
+//         console.log(`[AUDIO] Sidechain compression completed in ${duration}ms: ${outputPath}`);
+//         resolve();
+//       })
+//       .save(outputPath);
+//   });
+// }
+
+/**
+ * Get audio file duration in seconds
+ */
+export async function getAudioDuration(filePath: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ffmpeg.ffprobe(filePath, (err, metadata) => {
+      if (err) {
+        reject(new Error(`FFprobe error: ${err.message}`));
+      } else {
+        const duration = metadata.format.duration || 0;
+        resolve(duration);
+      }
+    });
+  });
+}
+
+/**
+ * Convert audio file to MP3 format
+ */
+export async function convertToMP3(
+  inputPath: string,
+  outputPath: string
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ffmpeg(inputPath)
+      .audioCodec('libmp3lame')
+      .audioFrequency(44100)
+      .audioChannels(2)
+      .audioBitrate('192k')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .on('error', (err) => {
+        reject(new Error(`FFmpeg error: ${err.message}`));
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .on('end', () => {
+        resolve();
+      })
+      .save(outputPath);
+  });
+}
+
+/**
+ * Normalize audio volume
+ */
+export async function normalizeAudio(
+  inputPath: string,
+  outputPath: string,
+  targetLevel: number = -16 // dB
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ffmpeg(inputPath)
+      .audioFilter(`loudnorm=I=${targetLevel}:TP=-1.5:LRA=11`)
+      .audioCodec('libmp3lame')
+      .audioFrequency(44100)
+      .audioChannels(2)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .on('error', (err) => {
+        reject(new Error(`FFmpeg error: ${err.message}`));
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .on('end', () => {
+        resolve();
+      })
+      .save(outputPath);
+  });
+}
+
+/**
+ * Check if FFmpeg is available
+ */
+export async function checkFFmpegAvailable(): Promise<boolean> {
+  return new Promise((resolve) => {
+    ffmpeg.getAvailableFormats((err, formats) => {
+      resolve(!err && !!formats);
+    });
+  });
+}
+
