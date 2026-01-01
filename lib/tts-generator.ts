@@ -2,6 +2,12 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { TextToSpeechClient } from '@google-cloud/text-to-speech';
 import { SubtitleSegment, TTSOptions } from './types';
+import {
+  getCacheKey,
+  getCachedAudio,
+  saveCachedAudio,
+  copyCachedAudio,
+} from './tts-cache';
 
 // Default TTS options
 const DEFAULT_TTS_OPTIONS: Required<TTSOptions> = {
@@ -21,6 +27,7 @@ function getTTSClient(): TextToSpeechClient {
 
 /**
  * Generate TTS audio for a single text segment
+ * Uses cache to avoid regenerating the same sentences
  */
 export async function generateTTS(
   text: string,
@@ -30,9 +37,48 @@ export async function generateTTS(
   console.log(`[TTS] Generating audio for: "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"`);
   const startTime = Date.now();
 
-  const client = getTTSClient();
   const opts = { ...DEFAULT_TTS_OPTIONS, ...options };
+  const speakingRate = opts.speakingRate;
 
+  // Generate cache key (excluding speakingRate)
+  const cacheKey = getCacheKey(text, opts);
+
+  // Check if we have cached audio
+  const cachedPath = await getCachedAudio(cacheKey);
+
+  if (cachedPath) {
+    console.log(`[TTS] Cache hit for: "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"`);
+
+    // Copy cached audio to output
+    await copyCachedAudio(cacheKey, outputPath);
+
+    // If speakingRate is not 1.0, adjust the speed
+    if (speakingRate !== undefined && speakingRate !== 1.0) {
+      console.log(`[TTS] Adjusting cached audio speed to ${speakingRate.toFixed(2)}x`);
+      const { adjustAudioSpeed } = await import('./audio-processor');
+      const tempPath = outputPath.replace('.mp3', '_temp.mp3');
+      
+      // Move current file to temp
+      await fs.rename(outputPath, tempPath);
+      
+      // Adjust speed and write to output
+      await adjustAudioSpeed(tempPath, outputPath, speakingRate);
+      
+      // Clean up temp file
+      await fs.unlink(tempPath);
+    }
+
+    const duration = Date.now() - startTime;
+    console.log(`[TTS] Used cached audio in ${duration}ms: ${outputPath}`);
+    return;
+  }
+
+  console.log(`[TTS] Cache miss, generating new audio...`);
+
+  // Generate new audio via Google Cloud TTS
+  const client = getTTSClient();
+
+  // Request with speakingRate = 1.0 for base cache
   const request = {
     input: { text },
     voice: {
@@ -41,20 +87,40 @@ export async function generateTTS(
     },
     audioConfig: {
       audioEncoding: opts.audioEncoding,
-      speakingRate: opts.speakingRate,
+      speakingRate: 1.0, // Always generate at 1.0 for cache
       pitch: opts.pitch,
     },
   };
 
   const [response] = await client.synthesizeSpeech(request);
-  
+  const audioBuffer = response.audioContent as Buffer;
+
+  // Save to cache
+  await saveCachedAudio(cacheKey, audioBuffer);
+
   // Ensure directory exists
   const dir = path.dirname(outputPath);
   await fs.mkdir(dir, { recursive: true });
 
-  // Write audio to file
-  await fs.writeFile(outputPath, response.audioContent as Buffer, 'binary');
-  
+  // If speakingRate is not 1.0, adjust the speed
+  if (speakingRate !== undefined && speakingRate !== 1.0) {
+    console.log(`[TTS] Adjusting generated audio speed to ${speakingRate.toFixed(2)}x`);
+    const tempPath = outputPath.replace('.mp3', '_temp.mp3');
+    
+    // Write base audio to temp
+    await fs.writeFile(tempPath, audioBuffer, 'binary');
+    
+    // Adjust speed and write to output
+    const { adjustAudioSpeed } = await import('./audio-processor');
+    await adjustAudioSpeed(tempPath, outputPath, speakingRate);
+    
+    // Clean up temp file
+    await fs.unlink(tempPath);
+  } else {
+    // Write audio directly to file
+    await fs.writeFile(outputPath, audioBuffer, 'binary');
+  }
+
   const duration = Date.now() - startTime;
   console.log(`[TTS] Generated audio in ${duration}ms: ${outputPath}`);
 }

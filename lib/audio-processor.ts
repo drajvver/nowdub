@@ -326,6 +326,79 @@ export async function normalizeAudio(
 }
 
 /**
+ * Adjust audio playback speed using FFmpeg's atempo filter
+ * Supports speed adjustments beyond the 0.5x-2.0x limit by chaining filters
+ */
+export async function adjustAudioSpeed(
+  inputPath: string,
+  outputPath: string,
+  targetSpeed: number
+): Promise<void> {
+  console.log(`[AUDIO] Adjusting audio speed: ${targetSpeed.toFixed(2)}x -> ${outputPath}`);
+  const startTime = Date.now();
+
+  return new Promise((resolve, reject) => {
+    // FFmpeg's atempo filter only supports 0.5 to 2.0
+    // For speeds outside this range, we chain multiple atempo filters
+    const filters: string[] = [];
+    let remainingSpeed = targetSpeed;
+
+    // Chain atempo filters until we reach the target speed
+    while (Math.abs(remainingSpeed - 1.0) > 0.01) {
+      let tempo: number;
+      
+      if (remainingSpeed > 2.0) {
+        tempo = 2.0;
+        remainingSpeed /= 2.0;
+      } else if (remainingSpeed < 0.5) {
+        tempo = 0.5;
+        remainingSpeed /= 0.5;
+      } else {
+        tempo = remainingSpeed;
+        remainingSpeed = 1.0;
+      }
+
+      filters.push(`atempo=${tempo.toFixed(3)}`);
+    }
+
+    // If no filters needed (speed is ~1.0), just copy the file
+    if (filters.length === 0) {
+      fs.copyFile(inputPath, outputPath)
+        .then(() => {
+          const duration = Date.now() - startTime;
+          console.log(`[AUDIO] No speed adjustment needed (1.0x), copied in ${duration}ms`);
+          resolve();
+        })
+        .catch(reject);
+      return;
+    }
+
+    // Build filter chain
+    const filterChain = filters.join(',');
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ffmpeg(inputPath)
+      .audioFilter(filterChain)
+      .audioCodec('libmp3lame')
+      .audioFrequency(44100)
+      .audioChannels(2)
+      .audioBitrate('192k')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .on('error', (err) => {
+        console.error(`[AUDIO] FFmpeg error adjusting speed:`, err);
+        reject(new Error(`FFmpeg error: ${err.message}`));
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .on('end', () => {
+        const duration = Date.now() - startTime;
+        console.log(`[AUDIO] Speed adjusted to ${targetSpeed.toFixed(2)}x in ${duration}ms`);
+        resolve();
+      })
+      .save(outputPath);
+  });
+}
+
+/**
  * Check if FFmpeg is available
  */
 export async function checkFFmpegAvailable(): Promise<boolean> {
