@@ -17,6 +17,72 @@ const jobQueue: Id<"jobs">[] = [];
 const convex = getConvexClient();
 
 /**
+ * Initialize user credits if needed and check balance
+ */
+export async function initializeAndCheckCredits(userId: string, estimatedLines: number): Promise<{ 
+  balance: number; 
+  hasEnough: boolean;
+  estimatedCost: number;
+}> {
+  // Initialize credits (will return existing balance if already initialized)
+  const balance = await convex.mutation(api.credits.initializeUserCredits, { userId });
+  
+  // Conservative estimate: assume all lines are cache misses (1 credit each)
+  const estimatedCost = estimatedLines;
+  
+  return {
+    balance,
+    hasEnough: balance >= estimatedCost,
+    estimatedCost,
+  };
+}
+
+/**
+ * Get current user credit balance
+ */
+export async function getUserCredits(userId: string): Promise<number | null> {
+  return await convex.query(api.credits.getUserCredits, { userId });
+}
+
+/**
+ * Check if user has enough credits for a job
+ */
+export async function checkCredits(userId: string, estimatedLines: number): Promise<boolean> {
+  const hasEnough = await convex.query(api.credits.hasEnoughCredits, { 
+    userId, 
+    amount: estimatedLines, // Conservative estimate: 1 credit per line
+  });
+  return hasEnough;
+}
+
+/**
+ * Deduct credits after job completion
+ */
+async function deductCreditsForJob(
+  userId: string, 
+  jobId: string, 
+  creditsUsed: number,
+  cacheHits: number,
+  cacheMisses: number
+): Promise<void> {
+  try {
+    const description = `TTS generation: ${cacheHits} cached (0.5 ea) + ${cacheMisses} new (1.0 ea) = ${creditsUsed.toFixed(1)} credits`;
+    
+    await convex.mutation(api.credits.deductCredits, {
+      userId,
+      amount: creditsUsed,
+      jobId,
+      description,
+    });
+    
+    console.log(`[CREDITS] Deducted ${creditsUsed.toFixed(1)} credits from user ${userId} for job ${jobId}`);
+  } catch (error) {
+    console.error(`[CREDITS] Error deducting credits for job ${jobId}:`, error);
+    // Don't throw - credits deduction failure shouldn't fail the job
+  }
+}
+
+/**
  * Convert Convex job to DubbingJob type
  */
 function convertConvexJobToDubbingJob(job: any, jobId: Id<"jobs">): DubbingJob {
@@ -106,7 +172,8 @@ export async function updateJobStatus(
   jobId: string,
   status: DubbingJob['status'],
   progress?: number,
-  error?: string
+  error?: string,
+  creditsUsed?: number
 ): Promise<void> {
   try {
     // Just update the status directly without fetching the old job
@@ -116,9 +183,10 @@ export async function updateJobStatus(
       status,
       progress,
       error,
+      creditsUsed,
     });
 
-    console.log(`[JOB] ${jobId}: -> ${status}${progress !== undefined ? ` (${progress}%)` : ''}${error ? ` - Error: ${error}` : ''}`);
+    console.log(`[JOB] ${jobId}: -> ${status}${progress !== undefined ? ` (${progress}%)` : ''}${error ? ` - Error: ${error}` : ''}${creditsUsed !== undefined ? ` [${creditsUsed} credits]` : ''}`);
 
     if (status === 'completed' || status === 'failed') {
       processingCount--;
@@ -353,7 +421,7 @@ async function processJob(jobId: Id<"jobs">): Promise<void> {
     await updateJobStatus(jobId, 'processing', 20);
     console.log(`[JOB] ${jobId}: Starting TTS generation for ${segments.length} segments...`);
     const ttsAudioPath = path.join(outputDir, 'tts_audio.mp3');
-    await generateTTSWithTiming(
+    const creditUsage = await generateTTSWithTiming(
       segments,
       ttsAudioPath,
       undefined,
@@ -362,6 +430,16 @@ async function processJob(jobId: Id<"jobs">): Promise<void> {
       }
     );
     console.log(`[JOB] ${jobId}: TTS audio generated: ${ttsAudioPath}`);
+    console.log(`[JOB] ${jobId}: Credit usage - ${creditUsage.cacheHits} cache hits, ${creditUsage.cacheMisses} cache misses, total: ${creditUsage.totalCredits} credits`);
+
+    // Deduct credits for this job
+    await deductCreditsForJob(
+      job.userId,
+      jobId,
+      creditUsage.totalCredits,
+      creditUsage.cacheHits,
+      creditUsage.cacheMisses
+    );
 
     await updateJobFiles(jobId, { ttsAudio: ttsAudioPath });
 
@@ -405,10 +483,10 @@ async function processJob(jobId: Id<"jobs">): Promise<void> {
       console.log(`[JOB] ${jobId}: No temporary audio to clean up`);
     }
 
-    // Mark job as completed
+    // Mark job as completed with credits used
     const duration = Date.now() - startTime;
     console.log(`[JOB] ${jobId}: Processing completed in ${duration}ms`);
-    await updateJobStatus(jobId, 'completed', 100);
+    await updateJobStatus(jobId, 'completed', 100, undefined, creditUsage.totalCredits);
   } catch (error) {
     const duration = Date.now() - startTime;
     console.error(`[JOB] ${jobId}: Error after ${duration}ms:`, error);

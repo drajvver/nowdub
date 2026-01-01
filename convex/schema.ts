@@ -26,9 +26,34 @@ export default defineSchema({
     }),
     createdAt: v.number(), // timestamp
     completedAt: v.optional(v.number()), // timestamp
+    creditsUsed: v.optional(v.float64()), // credits consumed by this job
   })
     .index("by_user", ["userId"])
     .index("by_status", ["status"])
     .index("by_user_and_status", ["userId", "status"]),
+
+  // User credits balance
+  userCredits: defineTable({
+    userId: v.string(),
+    balance: v.float64(), // current credit balance
+    updatedAt: v.number(), // timestamp
+  })
+    .index("by_user", ["userId"]),
+
+  // Credit transaction history
+  creditTransactions: defineTable({
+    userId: v.string(),
+    jobId: v.optional(v.string()), // reference to job (optional for initial credits)
+    amount: v.float64(), // positive for additions, negative for deductions
+    type: v.union(
+      v.literal("initial"),
+      v.literal("job_deduction"),
+      v.literal("admin_adjustment")
+    ),
+    description: v.string(),
+    createdAt: v.number(), // timestamp
+  })
+    .index("by_user", ["userId"])
+    .index("by_user_and_created", ["userId", "createdAt"]),
 });
 

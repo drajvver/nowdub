@@ -45,8 +45,32 @@ export interface JobStatusResponse {
   error?: string;
   createdAt: string;
   completedAt?: string;
+  creditsUsed?: number;
   downloads?: {
     ttsAudio?: string;
     mergedAudio?: string;
   };
+}
+
+// Credit system types
+export interface CreditTransaction {
+  _id: string;
+  userId: string;
+  jobId?: string;
+  amount: number;
+  type: 'initial' | 'job_deduction' | 'admin_adjustment';
+  description: string;
+  createdAt: number;
+}
+
+export interface UserCredits {
+  balance: number | null;
+  isInitialized: boolean;
+  recentTransactions: CreditTransaction[];
+}
+
+export interface CreditEstimate {
+  minCredits: number; // If all cache hits
+  maxCredits: number; // If all cache misses
+  lineCount: number;
 }

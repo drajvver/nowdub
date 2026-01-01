@@ -18,6 +18,28 @@ const DEFAULT_TTS_OPTIONS: Required<TTSOptions> = {
   pitch: 0.0,
 };
 
+// Credit cost constants
+export const CREDIT_COST_CACHE_MISS = 1.0;  // Full cost for new TTS generation
+export const CREDIT_COST_CACHE_HIT = 0.5;   // Reduced cost for cached audio
+
+// Result type for TTS generation with credit tracking
+export interface TTSResult {
+  cacheHit: boolean;
+}
+
+// Result type for segment generation
+export interface TTSSegmentResult {
+  filePath: string;
+  cacheHit: boolean;
+}
+
+// Credit usage summary
+export interface CreditUsage {
+  cacheHits: number;
+  cacheMisses: number;
+  totalCredits: number;
+}
+
 /**
  * Get Google Cloud TTS client
  */
@@ -28,12 +50,13 @@ function getTTSClient(): TextToSpeechClient {
 /**
  * Generate TTS audio for a single text segment
  * Uses cache to avoid regenerating the same sentences
+ * Returns whether cache was used (for credit calculation)
  */
 export async function generateTTS(
   text: string,
   outputPath: string,
   options?: TTSOptions
-): Promise<void> {
+): Promise<TTSResult> {
   console.log(`[TTS] Generating audio for: "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"`);
   const startTime = Date.now();
 
@@ -70,7 +93,7 @@ export async function generateTTS(
 
     const duration = Date.now() - startTime;
     console.log(`[TTS] Used cached audio in ${duration}ms: ${outputPath}`);
-    return;
+    return { cacheHit: true };
   }
 
   console.log(`[TTS] Cache miss, generating new audio...`);
@@ -123,22 +146,24 @@ export async function generateTTS(
 
   const duration = Date.now() - startTime;
   console.log(`[TTS] Generated audio in ${duration}ms: ${outputPath}`);
+  return { cacheHit: false };
 }
 
 /**
  * Generate TTS audio for multiple subtitle segments with timing
  * This generates individual audio files for each segment
  * Adjusts speaking rate dynamically to match expected durations
+ * Returns segment results with cache hit information for credit calculation
  */
 export async function generateTTSSegments(
   segments: SubtitleSegment[],
   outputDir: string,
   options?: TTSOptions,
   onProgress?: (current: number, total: number) => void
-): Promise<string[]> {
+): Promise<TTSSegmentResult[]> {
   console.log(`[TTS] Generating ${segments.length} TTS segments to ${outputDir}`);
   const startTime = Date.now();
-  const audioFiles: string[] = [];
+  const results: TTSSegmentResult[] = [];
 
   // Ensure output directory exists
   await fs.mkdir(outputDir, { recursive: true });
@@ -158,7 +183,8 @@ export async function generateTTSSegments(
       const { insertSilence } = await import('./audio-processor');
       const expectedDuration = segment?.end && segment?.start ? segment.end - segment.start : 0.1;
       await insertSilence(outputPath, Math.max(0.1, expectedDuration));
-      audioFiles.push(outputPath);
+      // Empty segments don't count as TTS - no credit cost
+      results.push({ filePath: outputPath, cacheHit: true });
       if (onProgress) {
         onProgress(i + 1, segments.length);
       }
@@ -175,9 +201,14 @@ export async function generateTTSSegments(
     let actualDuration = 0;
     let attempts = 0;
     const maxAttempts = 3;
+    let segmentCacheHit = false;
 
     while (attempts < maxAttempts) {
-      await generateTTS(segment.text, outputPath, currentOptions);
+      const result = await generateTTS(segment.text, outputPath, currentOptions);
+      // Only count the first attempt for cache hit (subsequent attempts are rate adjustments)
+      if (attempts === 0) {
+        segmentCacheHit = result.cacheHit;
+      }
       actualDuration = await getAudioDuration(outputPath);
       
       const durationDiff = actualDuration - expectedDuration;
@@ -240,7 +271,7 @@ export async function generateTTSSegments(
       );
     }
 
-    audioFiles.push(outputPath);
+    results.push({ filePath: outputPath, cacheHit: segmentCacheHit });
 
     if (onProgress) {
       onProgress(i + 1, segments.length);
@@ -248,25 +279,29 @@ export async function generateTTSSegments(
   }
 
   const duration = Date.now() - startTime;
-  console.log(`[TTS] Generated ${audioFiles.length} segment files from ${segments.length} segments in ${duration}ms`);
+  const cacheHits = results.filter(r => r.cacheHit).length;
+  const cacheMisses = results.length - cacheHits;
+  console.log(`[TTS] Generated ${results.length} segment files from ${segments.length} segments in ${duration}ms`);
+  console.log(`[TTS] Cache stats: ${cacheHits} hits, ${cacheMisses} misses`);
   
-  if (audioFiles.length !== segments.length) {
-    console.error(`[TTS] WARNING: Generated ${audioFiles.length} files but expected ${segments.length} segments!`);
+  if (results.length !== segments.length) {
+    console.error(`[TTS] WARNING: Generated ${results.length} files but expected ${segments.length} segments!`);
   }
   
-  return audioFiles;
+  return results;
 }
 
 /**
  * Generate complete TTS audio with silence periods
  * This creates a single audio file with proper timing
+ * Returns credit usage information for billing
  */
 export async function generateTTSWithTiming(
   segments: SubtitleSegment[],
   outputPath: string,
   options?: TTSOptions,
   onProgress?: (progress: number) => void
-): Promise<void> {
+): Promise<CreditUsage> {
   console.log(`[TTS] Generating TTS with timing to ${outputPath}`);
   const startTime = Date.now();
   
@@ -277,10 +312,13 @@ export async function generateTTSWithTiming(
   await fs.mkdir(tempDir, { recursive: true });
   console.log(`[TTS] Created temp directory: ${tempDir}`);
 
+  // Track credit usage
+  let creditUsage: CreditUsage = { cacheHits: 0, cacheMisses: 0, totalCredits: 0 };
+
   try {
     // Generate TTS for each segment
     console.log(`[TTS] Starting generation of ${segments.length} segments...`);
-    const segmentFiles = await generateTTSSegments(
+    const segmentResults = await generateTTSSegments(
       segments,
       tempDir,
       options,
@@ -290,6 +328,18 @@ export async function generateTTSWithTiming(
         }
       }
     );
+
+    // Calculate credit usage from segment results
+    creditUsage.cacheHits = segmentResults.filter(r => r.cacheHit).length;
+    creditUsage.cacheMisses = segmentResults.filter(r => !r.cacheHit).length;
+    creditUsage.totalCredits = 
+      (creditUsage.cacheHits * CREDIT_COST_CACHE_HIT) + 
+      (creditUsage.cacheMisses * CREDIT_COST_CACHE_MISS);
+
+    console.log(`[TTS] Credit usage: ${creditUsage.cacheHits} cache hits (${creditUsage.cacheHits * CREDIT_COST_CACHE_HIT} credits), ${creditUsage.cacheMisses} cache misses (${creditUsage.cacheMisses * CREDIT_COST_CACHE_MISS} credits), total: ${creditUsage.totalCredits} credits`);
+
+    // Extract file paths for further processing
+    const segmentFiles = segmentResults.map(r => r.filePath);
 
     // Verify all segments were generated
     if (segmentFiles.length !== segments.length) {
@@ -450,6 +500,8 @@ export async function generateTTSWithTiming(
     
     const duration = Date.now() - startTime;
     console.log(`[TTS] TTS with timing completed in ${duration}ms`);
+    
+    return creditUsage;
   } finally {
     // Clean up temporary directory
     try {

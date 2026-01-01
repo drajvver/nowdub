@@ -126,6 +126,7 @@ export const updateJobStatus = mutation({
     ),
     progress: v.optional(v.number()),
     error: v.optional(v.string()),
+    creditsUsed: v.optional(v.float64()),
   },
   handler: async (ctx, args) => {
     const job = await ctx.db.get(args.jobId);
@@ -143,6 +144,10 @@ export const updateJobStatus = mutation({
 
     if (args.error !== undefined) {
       updateData.error = args.error;
+    }
+
+    if (args.creditsUsed !== undefined) {
+      updateData.creditsUsed = args.creditsUsed;
     }
 
     if (args.status === "completed" || args.status === "failed") {

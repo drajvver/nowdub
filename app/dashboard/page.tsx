@@ -1,16 +1,43 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
-import { JobStatusResponse } from '@/lib/types';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { JobStatusResponse, CreditEstimate } from '@/lib/types';
 import { useConvexAuthToken, createAuthFetchOptions } from '@/lib/use-convex-auth-token';
+import { useUserCredits, estimateCreditCost } from '@/lib/use-user-credits';
 
 interface UploadFormData {
   subtitle: File | null;
   audio: File | null;
 }
 
+/**
+ * Parse subtitle file content to count lines
+ */
+function countSubtitleLines(content: string): number {
+  // Simple parsing - count non-empty lines that aren't timestamps or numbers
+  const lines = content.split('\n');
+  let count = 0;
+  
+  for (const line of lines) {
+    const trimmed = line.trim();
+    // Skip empty lines
+    if (!trimmed) continue;
+    // Skip VTT header
+    if (trimmed === 'WEBVTT') continue;
+    // Skip cue identifiers (numbers or identifiers)
+    if (/^\d+$/.test(trimmed)) continue;
+    // Skip timestamp lines (00:00:00.000 --> 00:00:00.000)
+    if (/^\d{2}:\d{2}:\d{2}[.,]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[.,]\d{3}/.test(trimmed)) continue;
+    // This is likely a text line
+    count++;
+  }
+  
+  return count;
+}
+
 export default function DashboardPage() {
   const token = useConvexAuthToken();
+  const { balance, loading: creditsLoading, refetch: refetchCredits, transactions } = useUserCredits();
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [formData, setFormData] = useState<UploadFormData>({
     subtitle: null,
@@ -19,10 +46,14 @@ export default function DashboardPage() {
   const [uploading, setUploading] = useState(false);
   const [jobs, setJobs] = useState<JobStatusResponse[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [creditEstimate, setCreditEstimate] = useState<CreditEstimate | null>(null);
+  const [showTransactions, setShowTransactions] = useState(false);
 
   // Poll for job updates with dynamic interval
   useEffect(() => {
     if (!token) return; // Wait for token
+    
+    let previousActiveJobs = true; // Track if we had active jobs before
     
     const fetchJobs = async () => {
       try {
@@ -37,6 +68,12 @@ export default function DashboardPage() {
           const hasActiveJobs = data.some((job: JobStatusResponse) => 
             job.status === 'pending' || job.status === 'processing'
           );
+          
+          // If jobs just completed, refresh credits
+          if (previousActiveJobs && !hasActiveJobs) {
+            refetchCredits();
+          }
+          previousActiveJobs = hasActiveJobs;
           
           // Schedule next poll: 2 seconds if active jobs, 60 seconds otherwise
           const nextInterval = hasActiveJobs ? 2000 : 60000;
@@ -58,12 +95,27 @@ export default function DashboardPage() {
         clearTimeout(timeoutRef.current);
       }
     };
-  }, [token]);
+  }, [token, refetchCredits]);
 
-  const handleFileChange = (type: 'subtitle' | 'audio', file: File | null) => {
+  const handleFileChange = useCallback(async (type: 'subtitle' | 'audio', file: File | null) => {
     setFormData((prev) => ({ ...prev, [type]: file }));
     setError(null);
-  };
+    
+    // If it's a subtitle file, parse it to estimate credits
+    if (type === 'subtitle' && file) {
+      try {
+        const content = await file.text();
+        const lineCount = countSubtitleLines(content);
+        const estimate = estimateCreditCost(lineCount);
+        setCreditEstimate(estimate);
+      } catch (err) {
+        console.error('Error parsing subtitle file:', err);
+        setCreditEstimate(null);
+      }
+    } else if (type === 'subtitle' && !file) {
+      setCreditEstimate(null);
+    }
+  }, []);
 
   const handleUpload = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -98,8 +150,9 @@ export default function DashboardPage() {
       }
 
       setFormData({ subtitle: null, audio: null });
+      setCreditEstimate(null);
 
-      // Refresh jobs
+      // Refresh jobs and credits
       const jobsResponse = await fetch('/api/jobs', createAuthFetchOptions(token, {
         credentials: 'include',
       }));
@@ -107,6 +160,9 @@ export default function DashboardPage() {
         const jobsData = await jobsResponse.json();
         setJobs(jobsData);
       }
+      
+      // Refetch credits after job completion (will be updated later when job finishes)
+      refetchCredits();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Upload failed');
     } finally {
@@ -151,10 +207,32 @@ export default function DashboardPage() {
     return date.toLocaleString();
   };
 
+  // Check if user has enough credits for the upload
+  const hasEnoughCredits = balance !== null && creditEstimate 
+    ? balance >= creditEstimate.maxCredits 
+    : true;
+
   return (
     <div className="max-w-4xl mx-auto px-4 py-8 sm:px-6 lg:px-8">
       <header className="mb-10">
-        <h1 className="text-3xl font-bold text-zinc-100 mb-2">Dashboard</h1>
+        <div className="flex items-center justify-between mb-2">
+          <h1 className="text-3xl font-bold text-zinc-100">Dashboard</h1>
+          
+          {/* Credits Display */}
+          <div className="flex items-center gap-2 px-4 py-2 bg-zinc-900 border border-zinc-800 rounded-xl">
+            <svg className="w-5 h-5 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            {creditsLoading ? (
+              <span className="text-zinc-400 text-sm">Loading...</span>
+            ) : (
+              <span className="text-zinc-100 font-semibold">
+                {balance !== null ? balance.toFixed(1) : '0'} 
+                <span className="text-zinc-400 font-normal ml-1">credits</span>
+              </span>
+            )}
+          </div>
+        </div>
         <p className="text-zinc-400">
           Upload your files and generate AI-powered dubbing
         </p>
@@ -230,6 +308,39 @@ export default function DashboardPage() {
             )}
           </div>
 
+          {/* Credit Estimation */}
+          {creditEstimate && (
+            <div className={`rounded-xl p-4 ${hasEnoughCredits ? 'bg-zinc-800/50 border border-zinc-700' : 'bg-red-900/20 border border-red-800/50'}`}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <svg className={`w-5 h-5 ${hasEnoughCredits ? 'text-amber-400' : 'text-red-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <span className="text-sm text-zinc-300">Estimated Cost</span>
+                </div>
+                <div className="text-right">
+                  <span className={`font-semibold ${hasEnoughCredits ? 'text-zinc-100' : 'text-red-300'}`}>
+                    {creditEstimate.minCredits === creditEstimate.maxCredits 
+                      ? `${creditEstimate.maxCredits} credits`
+                      : `${creditEstimate.minCredits.toFixed(1)} - ${creditEstimate.maxCredits} credits`
+                    }
+                  </span>
+                  <p className="text-xs text-zinc-500">
+                    {creditEstimate.lineCount} line{creditEstimate.lineCount !== 1 ? 's' : ''} detected
+                  </p>
+                </div>
+              </div>
+              {!hasEnoughCredits && (
+                <p className="mt-2 text-sm text-red-300">
+                  Insufficient credits. You need at least {creditEstimate.maxCredits} credits.
+                </p>
+              )}
+              <p className="mt-2 text-xs text-zinc-500">
+                Cost: 1 credit per new line, 0.5 credits for cached lines
+              </p>
+            </div>
+          )}
+
           {error && (
             <div className="bg-red-900/20 border border-red-800/50 rounded-xl p-4">
               <p className="text-sm text-red-300">{error}</p>
@@ -238,7 +349,7 @@ export default function DashboardPage() {
 
           <button
             type="submit"
-            disabled={uploading || !formData.subtitle || !formData.audio}
+            disabled={uploading || !formData.subtitle || !formData.audio || !hasEnoughCredits}
             className="w-full py-3 px-4 bg-amber-500 hover:bg-amber-400 text-zinc-900
               rounded-xl font-semibold transition-all duration-200
               disabled:opacity-50 disabled:cursor-not-allowed
@@ -252,6 +363,8 @@ export default function DashboardPage() {
                 </svg>
                 Processing...
               </span>
+            ) : !hasEnoughCredits ? (
+              'Insufficient Credits'
             ) : (
               'Start Processing'
             )}
@@ -380,6 +493,71 @@ export default function DashboardPage() {
                 )}
               </div>
             ))}
+          </div>
+        )}
+      </section>
+
+      {/* Credit History Section */}
+      <section className="mt-8">
+        <button
+          onClick={() => setShowTransactions(!showTransactions)}
+          className="w-full flex items-center justify-between text-xl font-semibold text-zinc-100 mb-6 p-4 bg-zinc-900 border border-zinc-800 rounded-2xl hover:border-zinc-700 transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-amber-500/10 rounded-xl flex items-center justify-center">
+              <svg className="w-5 h-5 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+              </svg>
+            </div>
+            Credit History
+          </div>
+          <svg 
+            className={`w-5 h-5 text-zinc-400 transition-transform ${showTransactions ? 'rotate-180' : ''}`} 
+            fill="none" 
+            viewBox="0 0 24 24" 
+            stroke="currentColor"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+
+        {showTransactions && (
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden">
+            {transactions.length === 0 ? (
+              <div className="p-8 text-center">
+                <p className="text-zinc-400">No transactions yet.</p>
+              </div>
+            ) : (
+              <div className="divide-y divide-zinc-800">
+                {transactions.map((tx) => (
+                  <div key={tx._id} className="p-4 flex items-center justify-between">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                          tx.type === 'initial' 
+                            ? 'bg-green-500/20 text-green-300' 
+                            : tx.type === 'job_deduction'
+                            ? 'bg-amber-500/20 text-amber-300'
+                            : 'bg-blue-500/20 text-blue-300'
+                        }`}>
+                          {tx.type === 'initial' ? 'Initial' : tx.type === 'job_deduction' ? 'Job' : 'Adjustment'}
+                        </span>
+                        <span className="text-sm text-zinc-500">
+                          {new Date(tx.createdAt).toLocaleString()}
+                        </span>
+                      </div>
+                      <p className="text-sm text-zinc-300">{tx.description}</p>
+                      {tx.jobId && (
+                        <p className="text-xs text-zinc-500 mt-1">Job: {tx.jobId.slice(0, 8)}...</p>
+                      )}
+                    </div>
+                    <div className={`text-lg font-semibold ${tx.amount >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {tx.amount >= 0 ? '+' : ''}{tx.amount.toFixed(1)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </section>
