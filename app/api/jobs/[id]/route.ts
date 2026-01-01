@@ -16,7 +16,7 @@ export async function GET(
 
   try {
     const { id } = await params;
-    const job = getJobForUser(id, user.id);
+    const job = await getJobForUser(id, user.id);
 
     if (!job) {
       return NextResponse.json(

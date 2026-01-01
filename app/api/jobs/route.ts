@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
 
   try {
     // Get only jobs belonging to this user
-    const jobs = getJobsByUser(user.id);
+    const jobs = await getJobsByUser(user.id);
     
     const jobResponses: JobStatusResponse[] = jobs.map((job) => ({
       id: job.id,

@@ -101,7 +101,7 @@ export async function POST(request: NextRequest) {
     console.log(`[UPLOAD] Saved audio: ${audioPath}`);
 
     // Create job with user ID
-    const job = createJob(subtitlePath, audioPath, user.id);
+    const job = await createJob(subtitlePath, audioPath, user.id);
 
     const duration = Date.now() - startTime;
     console.log(`[UPLOAD] Upload completed in ${duration}ms, job ID: ${job.id}`);

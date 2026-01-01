@@ -12,20 +12,47 @@ export interface AuthUser {
  */
 export async function getAuthUser(request: NextRequest): Promise<AuthUser | null> {
   try {
-    // Get the auth token from cookies
-    const sessionToken = request.cookies.get('__convexAuthJWT')?.value;
+    console.log('[AUTH] Checking authentication...');
+    console.log('[AUTH] Cookie names:', Array.from(request.cookies.getAll()).map(c => c.name));
     
-    if (!sessionToken) {
-      // Try authorization header as fallback
-      const authHeader = request.headers.get('authorization');
-      if (authHeader?.startsWith('Bearer ')) {
-        const token = authHeader.slice(7);
-        return decodeToken(token);
+    // First, try the Authorization header (preferred method for client-side auth)
+    const authHeader = request.headers.get('authorization');
+    if (authHeader?.startsWith('Bearer ')) {
+      const token = authHeader.slice(7);
+      console.log('[AUTH] Found Bearer token in Authorization header');
+      const user = decodeToken(token);
+      if (user) {
+        console.log('[AUTH] Successfully decoded user from header:', { id: user.id, email: user.email });
+        return user;
       }
-      return null;
     }
-
-    return decodeToken(sessionToken);
+    
+    // Try to find any cookie that looks like a Convex auth JWT
+    const allCookies = request.cookies.getAll();
+    for (const cookie of allCookies) {
+      if (cookie.name.toLowerCase().includes('convex') && cookie.name.toLowerCase().includes('jwt')) {
+        console.log('[AUTH] Found potential Convex JWT cookie:', cookie.name);
+        const user = decodeToken(cookie.value);
+        if (user) {
+          console.log('[AUTH] Successfully decoded user from cookie:', { id: user.id, email: user.email });
+          return user;
+        }
+      }
+    }
+    
+    // Also try the specific cookie name just in case
+    const sessionToken = request.cookies.get('__convexAuthJWT')?.value;
+    if (sessionToken) {
+      console.log('[AUTH] Found __convexAuthJWT cookie');
+      const user = decodeToken(sessionToken);
+      if (user) {
+        console.log('[AUTH] Successfully decoded user from __convexAuthJWT:', { id: user.id, email: user.email });
+        return user;
+      }
+    }
+    
+    console.log('[AUTH] No valid session token found');
+    return null;
   } catch (error) {
     console.error('[AUTH] Error verifying token:', error);
     return null;

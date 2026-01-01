@@ -1,10 +1,8 @@
 import { promises as fs } from 'fs';
 import path from 'path';
-import { v4 as uuidv4 } from 'uuid';
 import { DubbingJob } from './types';
-
-// In-memory job storage (can be upgraded to Redis/DB later)
-const jobs = new Map<string, DubbingJob>();
+import { getConvexClient, api } from './convex-server-client';
+import { Id } from '../convex/_generated/dataModel';
 
 // Maximum concurrent jobs
 const MAX_CONCURRENT_JOBS = 3;
@@ -13,187 +11,278 @@ const MAX_CONCURRENT_JOBS = 3;
 let processingCount = 0;
 
 // Job queue for pending jobs
-const jobQueue: string[] = [];
+const jobQueue: Id<"jobs">[] = [];
+
+// Get Convex client
+const convex = getConvexClient();
+
+/**
+ * Convert Convex job to DubbingJob type
+ */
+function convertConvexJobToDubbingJob(job: any, jobId: Id<"jobs">): DubbingJob {
+  return {
+    id: jobId,
+    userId: job.userId,
+    status: job.status,
+    progress: job.progress,
+    error: job.error,
+    files: job.files,
+    createdAt: new Date(job.createdAt),
+    completedAt: job.completedAt ? new Date(job.completedAt) : undefined,
+  };
+}
 
 /**
  * Create a new dubbing job
  */
-export function createJob(subtitlePath: string, originalAudioPath: string, userId: string): DubbingJob {
-  const job: DubbingJob = {
-    id: uuidv4(),
+export async function createJob(subtitlePath: string, originalAudioPath: string, userId: string): Promise<DubbingJob> {
+  const jobId = await convex.mutation(api.jobs.createJob, {
     userId,
-    status: 'pending',
     files: {
       subtitle: subtitlePath,
       originalAudio: originalAudioPath,
     },
-    createdAt: new Date(),
-  };
+  });
 
-  jobs.set(job.id, job);
-  jobQueue.push(job.id);
-
-  console.log(`[JOB] Created new job ${job.id} for user ${userId}`);
+  console.log(`[JOB] Created new job ${jobId} for user ${userId}`);
   console.log(`[JOB] Subtitle: ${subtitlePath}`);
   console.log(`[JOB] Audio: ${originalAudioPath}`);
   console.log(`[JOB] Queue size: ${jobQueue.length}, Processing: ${processingCount}/${MAX_CONCURRENT_JOBS}`);
 
-  // Try to process the job
+  // Add to queue and try to process
+  jobQueue.push(jobId);
   processNextJob();
 
-  return job;
+  // Fetch and return the created job
+  const job = await convex.query(api.jobs.getJob, { jobId, userId });
+  if (!job) {
+    throw new Error('Failed to create job');
+  }
+
+  return convertConvexJobToDubbingJob(job, jobId);
 }
 
 /**
  * Get a job by ID
  */
-export function getJob(jobId: string): DubbingJob | undefined {
-  return jobs.get(jobId);
+export async function getJob(jobId: string): Promise<DubbingJob | undefined> {
+  try {
+    // Note: This should only be called internally, not for user-facing operations
+    const job = await convex.query(api.jobs.getJob, { 
+      jobId: jobId as Id<"jobs">,
+      userId: undefined, // Will fail if called without userId - use getJobForUser instead
+    });
+    if (!job) return undefined;
+    return convertConvexJobToDubbingJob(job, jobId as Id<"jobs">);
+  } catch (error) {
+    console.error(`[JOB] Error getting job ${jobId}:`, error);
+    return undefined;
+  }
 }
 
 /**
  * Get a job by ID and verify ownership
  */
-export function getJobForUser(jobId: string, userId: string): DubbingJob | undefined {
-  const job = jobs.get(jobId);
-  if (job && job.userId === userId) {
-    return job;
+export async function getJobForUser(jobId: string, userId: string): Promise<DubbingJob | undefined> {
+  try {
+    const job = await convex.query(api.jobs.getJob, { 
+      jobId: jobId as Id<"jobs">,
+      userId,
+    });
+    if (!job) {
+      return undefined;
+    }
+    return convertConvexJobToDubbingJob(job, jobId as Id<"jobs">);
+  } catch (error) {
+    console.error(`[JOB] Error getting job ${jobId} for user ${userId}:`, error);
+    return undefined;
   }
-  return undefined;
 }
 
 /**
  * Update job status
  */
-export function updateJobStatus(
+export async function updateJobStatus(
   jobId: string,
   status: DubbingJob['status'],
   progress?: number,
   error?: string
-): void {
-  const job = jobs.get(jobId);
-  if (!job) return;
+): Promise<void> {
+  try {
+    // Just update the status directly without fetching the old job
+    // The Convex mutation will handle validation
+    await convex.mutation(api.jobs.updateJobStatus, {
+      jobId: jobId as Id<"jobs">,
+      status,
+      progress,
+      error,
+    });
 
-  const oldStatus = job.status;
-  job.status = status;
-  if (progress !== undefined) {
-    job.progress = progress;
-  }
-  if (error !== undefined) {
-    job.error = error;
-  }
+    console.log(`[JOB] ${jobId}: -> ${status}${progress !== undefined ? ` (${progress}%)` : ''}${error ? ` - Error: ${error}` : ''}`);
 
-  console.log(`[JOB] ${jobId}: ${oldStatus} -> ${status}${progress !== undefined ? ` (${progress}%)` : ''}${error ? ` - Error: ${error}` : ''}`);
-
-  if (status === 'completed' || status === 'failed') {
-    job.completedAt = new Date();
-    processingCount--;
-    
-    console.log(`[JOB] ${jobId}: Completed at ${job.completedAt.toISOString()}`);
-    console.log(`[JOB] Queue size: ${jobQueue.length}, Processing: ${processingCount}/${MAX_CONCURRENT_JOBS}`);
-    
-    // Process next job in queue
-    processNextJob();
+    if (status === 'completed' || status === 'failed') {
+      processingCount--;
+      
+      console.log(`[JOB] ${jobId}: Completed`);
+      console.log(`[JOB] Queue size: ${jobQueue.length}, Processing: ${processingCount}/${MAX_CONCURRENT_JOBS}`);
+      
+      // Process next job in queue
+      processNextJob();
+    }
+  } catch (error) {
+    console.error(`[JOB] Error updating job status for ${jobId}:`, error);
   }
 }
 
 /**
  * Update job file paths
  */
-export function updateJobFiles(
+export async function updateJobFiles(
   jobId: string,
   files: Partial<DubbingJob['files']>
-): void {
-  const job = jobs.get(jobId);
-  if (!job) return;
-
-  job.files = { ...job.files, ...files };
+): Promise<void> {
+  try {
+    await convex.mutation(api.jobs.updateJobFiles, {
+      jobId: jobId as Id<"jobs">,
+      files,
+    });
+  } catch (error) {
+    console.error(`[JOB] Error updating job files for ${jobId}:`, error);
+  }
 }
 
 /**
  * Get all jobs
  */
-export function getAllJobs(): DubbingJob[] {
-  return Array.from(jobs.values()).sort(
-    (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
-  );
+export async function getAllJobs(): Promise<DubbingJob[]> {
+  try {
+    // This shouldn't be used - kept for backward compatibility
+    // Use getJobsByUser instead
+    console.warn('[JOB] getAllJobs called - this should use getJobsByUser instead');
+    return [];
+  } catch (error) {
+    console.error('[JOB] Error getting all jobs:', error);
+    return [];
+  }
 }
 
 /**
  * Get all jobs for a specific user
  */
-export function getJobsByUser(userId: string): DubbingJob[] {
-  return Array.from(jobs.values())
-    .filter((job) => job.userId === userId)
-    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+export async function getJobsByUser(userId: string): Promise<DubbingJob[]> {
+  try {
+    const jobs = await convex.query(api.jobs.getUserJobs, { userId });
+    return jobs.map((job: any) => convertConvexJobToDubbingJob(job, job._id));
+  } catch (error) {
+    console.error(`[JOB] Error getting jobs for user ${userId}:`, error);
+    return [];
+  }
 }
 
 /**
  * Delete a job and clean up files
  */
 export async function deleteJob(jobId: string): Promise<void> {
-  const job = jobs.get(jobId);
-  if (!job) return;
+  try {
+    // This version doesn't verify ownership - should only be used for internal cleanup
+    const result = await convex.mutation(api.jobs.deleteJob, { 
+      jobId: jobId as Id<"jobs">,
+      userId: undefined,
+    });
+    
+    if (result.success && result.files) {
+      // Clean up files
+      const filesToDelete = [
+        result.files.subtitle,
+        result.files.originalAudio,
+        result.files.ttsAudio,
+        result.files.mergedAudio,
+      ].filter(Boolean);
 
-  // Clean up files
-  const filesToDelete = [
-    job.files.subtitle,
-    job.files.originalAudio,
-    job.files.ttsAudio,
-    job.files.mergedAudio,
-  ].filter(Boolean);
-
-  for (const filePath of filesToDelete) {
-    try {
-      await fs.unlink(filePath as string);
-    } catch (error) {
-      // Ignore errors if file doesn't exist
-      console.error(`Error deleting file ${filePath}:`, error);
+      for (const filePath of filesToDelete) {
+        try {
+          await fs.unlink(filePath as string);
+        } catch (error) {
+          // Ignore errors if file doesn't exist
+          console.error(`Error deleting file ${filePath}:`, error);
+        }
+      }
     }
+  } catch (error) {
+    console.error(`[JOB] Error deleting job ${jobId}:`, error);
   }
-
-  jobs.delete(jobId);
 }
 
 /**
  * Delete a job for a specific user (with ownership check)
  */
 export async function deleteJobForUser(jobId: string, userId: string): Promise<boolean> {
-  const job = jobs.get(jobId);
-  if (!job || job.userId !== userId) {
+  try {
+    const result = await convex.mutation(api.jobs.deleteJob, { 
+      jobId: jobId as Id<"jobs">,
+      userId,
+    });
+
+    if (result.success && result.files) {
+      // Clean up files
+      const filesToDelete = [
+        result.files.subtitle,
+        result.files.originalAudio,
+        result.files.ttsAudio,
+        result.files.mergedAudio,
+      ].filter(Boolean);
+
+      for (const filePath of filesToDelete) {
+        try {
+          await fs.unlink(filePath as string);
+        } catch (error) {
+          // Ignore errors if file doesn't exist
+          console.error(`Error deleting file ${filePath}:`, error);
+        }
+      }
+    }
+    
+    return true;
+  } catch (error) {
+    console.error(`[JOB] Error deleting job ${jobId} for user ${userId}:`, error);
     return false;
   }
-
-  await deleteJob(jobId);
-  return true;
 }
 
 /**
  * Clean up old completed jobs
  */
 export async function cleanupOldJobs(maxAge: number = 3600000): Promise<void> {
-  // maxAge in milliseconds (default: 1 hour)
-  const now = Date.now();
-  const jobsToDelete: string[] = [];
-
-  for (const [jobId, job] of jobs.entries()) {
-    const age = now - job.createdAt.getTime();
+  try {
+    const deletedJobs = await convex.mutation(api.jobs.cleanupOldJobs, { maxAgeMs: maxAge });
     
-    // Delete jobs older than maxAge that are completed or failed
-    if (age > maxAge && (job.status === 'completed' || job.status === 'failed')) {
-      jobsToDelete.push(jobId);
-    }
-  }
+    // Clean up files for deleted jobs
+    for (const { files } of deletedJobs) {
+      const filesToDelete = [
+        files.subtitle,
+        files.originalAudio,
+        files.ttsAudio,
+        files.mergedAudio,
+      ].filter(Boolean);
 
-  for (const jobId of jobsToDelete) {
-    await deleteJob(jobId);
+      for (const filePath of filesToDelete) {
+        try {
+          await fs.unlink(filePath as string);
+        } catch (error) {
+          // Ignore errors if file doesn't exist
+          console.error(`Error deleting file ${filePath}:`, error);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('[JOB] Error cleaning up old jobs:', error);
   }
 }
 
 /**
  * Process next job in queue
  */
-function processNextJob(): void {
+async function processNextJob(): Promise<void> {
   if (processingCount >= MAX_CONCURRENT_JOBS) {
     return;
   }
@@ -203,34 +292,50 @@ function processNextJob(): void {
     return;
   }
 
-  const job = jobs.get(jobId);
-  if (!job || job.status !== 'pending') {
-    // Skip this job and process next
-    processNextJob();
-    return;
-  }
+  try {
+    // For internal processing, we need to get the job without userId check
+    // We'll use the getPendingJobs query to verify it's actually pending
+    const pendingJobs = await convex.query(api.jobs.getPendingJobs, {});
+    const job = pendingJobs.find((j: any) => j._id === jobId);
+    
+    if (!job) {
+      // Skip this job and process next
+      processNextJob();
+      return;
+    }
 
-  processingCount++;
-  processJob(jobId);
+    processingCount++;
+    processJob(jobId);
+  } catch (error) {
+    console.error(`[JOB] Error in processNextJob for ${jobId}:`, error);
+    processNextJob();
+  }
 }
 
 /**
  * Process a single job
  */
-async function processJob(jobId: string): Promise<void> {
-  const job = jobs.get(jobId);
+async function processJob(jobId: Id<"jobs">): Promise<void> {
+  // Get job via getPendingJobs to avoid auth issues
+  const pendingJobs = await convex.query(api.jobs.getPendingJobs, {});
+  let job = pendingJobs.find((j: any) => j._id === jobId);
   if (!job) return;
 
   console.log(`[JOB] ${jobId}: Starting processing...`);
   const startTime = Date.now();
 
   try {
-    updateJobStatus(jobId, 'processing', 0);
+    await updateJobStatus(jobId, 'processing', 0);
 
     // Import modules dynamically to avoid circular dependencies
     const { parseSubtitleFile } = await import('./subtitle-parser');
     const { generateTTSWithTiming } = await import('./tts-generator');
     const { applySidechainCompression, convertToMP3 } = await import('./audio-processor');
+
+    // Refresh job data
+    const allJobs = await convex.query(api.jobs.getUserJobs, { userId: job.userId });
+    job = allJobs.find((j: any) => j._id === jobId);
+    if (!job) throw new Error('Job not found');
 
     // Create output directory
     const outputDir = path.join(path.dirname(job.files.subtitle), 'output');
@@ -238,30 +343,35 @@ async function processJob(jobId: string): Promise<void> {
     console.log(`[JOB] ${jobId}: Output directory: ${outputDir}`);
 
     // Read and parse subtitle file
-    updateJobStatus(jobId, 'processing', 10);
+    await updateJobStatus(jobId, 'processing', 10);
     console.log(`[JOB] ${jobId}: Reading subtitle file: ${job.files.subtitle}`);
     const subtitleContent = await fs.readFile(job.files.subtitle, 'utf-8');
     const segments = parseSubtitleFile(subtitleContent);
     console.log(`[JOB] ${jobId}: Parsed ${segments.length} subtitle segments`);
 
     // Generate TTS audio with timing
-    updateJobStatus(jobId, 'processing', 20);
+    await updateJobStatus(jobId, 'processing', 20);
     console.log(`[JOB] ${jobId}: Starting TTS generation for ${segments.length} segments...`);
     const ttsAudioPath = path.join(outputDir, 'tts_audio.mp3');
     await generateTTSWithTiming(
       segments,
       ttsAudioPath,
       undefined,
-      (progress) => {
-        updateJobStatus(jobId, 'processing', 20 + progress * 0.4); // 20-60%
+      async (progress) => {
+        await updateJobStatus(jobId, 'processing', 20 + progress * 0.4); // 20-60%
       }
     );
     console.log(`[JOB] ${jobId}: TTS audio generated: ${ttsAudioPath}`);
 
-    updateJobFiles(jobId, { ttsAudio: ttsAudioPath });
+    await updateJobFiles(jobId, { ttsAudio: ttsAudioPath });
+
+    // Refresh job data
+    const updatedJobs = await convex.query(api.jobs.getUserJobs, { userId: job.userId });
+    job = updatedJobs.find((j: any) => j._id === jobId);
+    if (!job) throw new Error('Job not found');
 
     // Convert original audio to MP3 if needed
-    updateJobStatus(jobId, 'processing', 65);
+    await updateJobStatus(jobId, 'processing', 65);
     const originalAudioPath = job.files.originalAudio;
     const convertedAudioPath = path.join(outputDir, 'original_converted.mp3');
     
@@ -275,7 +385,7 @@ async function processJob(jobId: string): Promise<void> {
     }
 
     // Apply sidechain compression to merge audio
-    updateJobStatus(jobId, 'processing', 75);
+    await updateJobStatus(jobId, 'processing', 75);
     console.log(`[JOB] ${jobId}: Applying sidechain compression...`);
     const mergedAudioPath = path.join(outputDir, 'merged_audio.mp3');
     await applySidechainCompression(
@@ -285,7 +395,7 @@ async function processJob(jobId: string): Promise<void> {
     );
     console.log(`[JOB] ${jobId}: Merged audio created: ${mergedAudioPath}`);
 
-    updateJobFiles(jobId, { mergedAudio: mergedAudioPath });
+    await updateJobFiles(jobId, { mergedAudio: mergedAudioPath });
 
     // Clean up converted audio
     try {
@@ -298,11 +408,11 @@ async function processJob(jobId: string): Promise<void> {
     // Mark job as completed
     const duration = Date.now() - startTime;
     console.log(`[JOB] ${jobId}: Processing completed in ${duration}ms`);
-    updateJobStatus(jobId, 'completed', 100);
+    await updateJobStatus(jobId, 'completed', 100);
   } catch (error) {
     const duration = Date.now() - startTime;
     console.error(`[JOB] ${jobId}: Error after ${duration}ms:`, error);
-    updateJobStatus(
+    await updateJobStatus(
       jobId,
       'failed',
       undefined,

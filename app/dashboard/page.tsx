@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { JobStatusResponse } from '@/lib/types';
+import { useConvexAuthToken, createAuthFetchOptions } from '@/lib/use-convex-auth-token';
 
 interface UploadFormData {
   subtitle: File | null;
@@ -9,6 +10,8 @@ interface UploadFormData {
 }
 
 export default function DashboardPage() {
+  const token = useConvexAuthToken();
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [formData, setFormData] = useState<UploadFormData>({
     subtitle: null,
     audio: null,
@@ -17,25 +20,45 @@ export default function DashboardPage() {
   const [jobs, setJobs] = useState<JobStatusResponse[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  // Poll for job updates
+  // Poll for job updates with dynamic interval
   useEffect(() => {
+    if (!token) return; // Wait for token
+    
     const fetchJobs = async () => {
       try {
-        const response = await fetch('/api/jobs');
+        const response = await fetch('/api/jobs', createAuthFetchOptions(token, {
+          credentials: 'include',
+        }));
         if (response.ok) {
           const data = await response.json();
           setJobs(data);
+          
+          // Determine next polling interval based on job status
+          const hasActiveJobs = data.some((job: JobStatusResponse) => 
+            job.status === 'pending' || job.status === 'processing'
+          );
+          
+          // Schedule next poll: 2 seconds if active jobs, 60 seconds otherwise
+          const nextInterval = hasActiveJobs ? 2000 : 60000;
+          timeoutRef.current = setTimeout(fetchJobs, nextInterval);
         }
       } catch (err) {
         console.error('Error fetching jobs:', err);
+        // Retry after 5 seconds on error
+        timeoutRef.current = setTimeout(fetchJobs, 5000);
       }
     };
 
+    // Start initial fetch
     fetchJobs();
-    const interval = setInterval(fetchJobs, 2000); // Poll every 2 seconds
 
-    return () => clearInterval(interval);
-  }, []);
+    // Cleanup function
+    return () => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+    };
+  }, [token]);
 
   const handleFileChange = (type: 'subtitle' | 'audio', file: File | null) => {
     setFormData((prev) => ({ ...prev, [type]: file }));
@@ -50,6 +73,11 @@ export default function DashboardPage() {
       return;
     }
 
+    if (!token) {
+      setError('Authentication token not available. Please try logging in again.');
+      return;
+    }
+
     setUploading(true);
     setError(null);
 
@@ -58,10 +86,11 @@ export default function DashboardPage() {
       formDataToSend.append('subtitle', formData.subtitle);
       formDataToSend.append('audio', formData.audio);
 
-      const response = await fetch('/api/upload', {
+      const response = await fetch('/api/upload', createAuthFetchOptions(token, {
         method: 'POST',
         body: formDataToSend,
-      });
+        credentials: 'include',
+      }));
 
       if (!response.ok) {
         const data = await response.json();
@@ -71,7 +100,9 @@ export default function DashboardPage() {
       setFormData({ subtitle: null, audio: null });
 
       // Refresh jobs
-      const jobsResponse = await fetch('/api/jobs');
+      const jobsResponse = await fetch('/api/jobs', createAuthFetchOptions(token, {
+        credentials: 'include',
+      }));
       if (jobsResponse.ok) {
         const jobsData = await jobsResponse.json();
         setJobs(jobsData);
@@ -84,10 +115,13 @@ export default function DashboardPage() {
   };
 
   const handleDeleteJob = async (jobId: string) => {
+    if (!token) return;
+    
     try {
-      const response = await fetch(`/api/jobs/${jobId}`, {
+      const response = await fetch(`/api/jobs/${jobId}`, createAuthFetchOptions(token, {
         method: 'DELETE',
-      });
+        credentials: 'include',
+      }));
 
       if (response.ok) {
         setJobs((prev) => prev.filter((job) => job.id !== jobId));

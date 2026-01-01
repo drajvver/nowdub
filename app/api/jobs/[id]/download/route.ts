@@ -34,7 +34,7 @@ export async function GET(
     }
 
     // Get job with ownership verification
-    const job = getJobForUser(id, user.id);
+    const job = await getJobForUser(id, user.id);
 
     if (!job) {
       console.log(`[DOWNLOAD] Error: Job not found or not owned by user`);
