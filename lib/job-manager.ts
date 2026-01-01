@@ -18,9 +18,10 @@ const jobQueue: string[] = [];
 /**
  * Create a new dubbing job
  */
-export function createJob(subtitlePath: string, originalAudioPath: string): DubbingJob {
+export function createJob(subtitlePath: string, originalAudioPath: string, userId: string): DubbingJob {
   const job: DubbingJob = {
     id: uuidv4(),
+    userId,
     status: 'pending',
     files: {
       subtitle: subtitlePath,
@@ -32,7 +33,7 @@ export function createJob(subtitlePath: string, originalAudioPath: string): Dubb
   jobs.set(job.id, job);
   jobQueue.push(job.id);
 
-  console.log(`[JOB] Created new job ${job.id}`);
+  console.log(`[JOB] Created new job ${job.id} for user ${userId}`);
   console.log(`[JOB] Subtitle: ${subtitlePath}`);
   console.log(`[JOB] Audio: ${originalAudioPath}`);
   console.log(`[JOB] Queue size: ${jobQueue.length}, Processing: ${processingCount}/${MAX_CONCURRENT_JOBS}`);
@@ -48,6 +49,17 @@ export function createJob(subtitlePath: string, originalAudioPath: string): Dubb
  */
 export function getJob(jobId: string): DubbingJob | undefined {
   return jobs.get(jobId);
+}
+
+/**
+ * Get a job by ID and verify ownership
+ */
+export function getJobForUser(jobId: string, userId: string): DubbingJob | undefined {
+  const job = jobs.get(jobId);
+  if (job && job.userId === userId) {
+    return job;
+  }
+  return undefined;
 }
 
 /**
@@ -108,6 +120,15 @@ export function getAllJobs(): DubbingJob[] {
 }
 
 /**
+ * Get all jobs for a specific user
+ */
+export function getJobsByUser(userId: string): DubbingJob[] {
+  return Array.from(jobs.values())
+    .filter((job) => job.userId === userId)
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+}
+
+/**
  * Delete a job and clean up files
  */
 export async function deleteJob(jobId: string): Promise<void> {
@@ -132,6 +153,19 @@ export async function deleteJob(jobId: string): Promise<void> {
   }
 
   jobs.delete(jobId);
+}
+
+/**
+ * Delete a job for a specific user (with ownership check)
+ */
+export async function deleteJobForUser(jobId: string, userId: string): Promise<boolean> {
+  const job = jobs.get(jobId);
+  if (!job || job.userId !== userId) {
+    return false;
+  }
+
+  await deleteJob(jobId);
+  return true;
 }
 
 /**
@@ -288,4 +322,3 @@ export function startCleanupScheduler(interval: number = 300000): void {
     });
   }, interval);
 }
-

@@ -1,13 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getJob } from '@/lib/job-manager';
+import { getJobForUser, deleteJobForUser } from '@/lib/job-manager';
 import { JobStatusResponse } from '@/lib/types';
+import { requireAuth, forbiddenResponse } from '@/lib/auth-middleware';
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
+  // Check authentication
+  const authResult = await requireAuth(request);
+  if (authResult instanceof NextResponse) {
+    return authResult;
+  }
+  const { user } = authResult;
+
   try {
-    const job = getJob(params.id);
+    const { id } = await params;
+    const job = getJobForUser(id, user.id);
 
     if (!job) {
       return NextResponse.json(
@@ -43,11 +52,25 @@ export async function GET(
 
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
+  // Check authentication
+  const authResult = await requireAuth(request);
+  if (authResult instanceof NextResponse) {
+    return authResult;
+  }
+  const { user } = authResult;
+
   try {
-    const { deleteJob } = await import('@/lib/job-manager');
-    await deleteJob(params.id);
+    const { id } = await params;
+    const deleted = await deleteJobForUser(id, user.id);
+    
+    if (!deleted) {
+      return NextResponse.json(
+        { error: 'Job not found or you do not have permission to delete it' },
+        { status: 404 }
+      );
+    }
 
     return NextResponse.json({ message: 'Job deleted successfully' });
   } catch (error) {
@@ -58,4 +81,3 @@ export async function DELETE(
     );
   }
 }
-

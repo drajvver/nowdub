@@ -19,6 +19,7 @@ export interface TTSOptions {
 
 export interface DubbingJob {
   id: string;
+  userId: string;
   status: 'pending' | 'processing' | 'completed' | 'failed';
   progress?: number;
   error?: string;
@@ -49,4 +50,3 @@ export interface JobStatusResponse {
     mergedAudio?: string;
   };
 }
-

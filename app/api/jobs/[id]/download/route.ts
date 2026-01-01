@@ -1,15 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { promises as fs } from 'fs';
-import path from 'path';
-import { getJob } from '@/lib/job-manager';
+import { getJobForUser } from '@/lib/job-manager';
 import { fileExists } from '@/lib/utils';
+import { requireAuth } from '@/lib/auth-middleware';
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
-  console.log(`[DOWNLOAD] Download request for job ${params.id}`);
+  const { id } = await params;
+  console.log(`[DOWNLOAD] Download request for job ${id}`);
   const startTime = Date.now();
+  
+  // Check authentication
+  const authResult = await requireAuth(request);
+  if (authResult instanceof NextResponse) {
+    console.log('[DOWNLOAD] Unauthorized request');
+    return authResult;
+  }
+  const { user } = authResult;
   
   try {
     const searchParams = request.nextUrl.searchParams;
@@ -24,10 +33,11 @@ export async function GET(
       );
     }
 
-    const job = getJob(params.id);
+    // Get job with ownership verification
+    const job = getJobForUser(id, user.id);
 
     if (!job) {
-      console.log(`[DOWNLOAD] Error: Job not found`);
+      console.log(`[DOWNLOAD] Error: Job not found or not owned by user`);
       return NextResponse.json(
         { error: 'Job not found' },
         { status: 404 }
@@ -84,4 +94,3 @@ export async function GET(
     );
   }
 }
-

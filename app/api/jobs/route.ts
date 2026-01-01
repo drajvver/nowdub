@@ -1,10 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAllJobs } from '@/lib/job-manager';
+import { getJobsByUser } from '@/lib/job-manager';
 import { JobStatusResponse } from '@/lib/types';
+import { requireAuth } from '@/lib/auth-middleware';
 
 export async function GET(request: NextRequest) {
+  // Check authentication
+  const authResult = await requireAuth(request);
+  if (authResult instanceof NextResponse) {
+    return authResult;
+  }
+  const { user } = authResult;
+
   try {
-    const jobs = getAllJobs();
+    // Get only jobs belonging to this user
+    const jobs = getJobsByUser(user.id);
     
     const jobResponses: JobStatusResponse[] = jobs.map((job) => ({
       id: job.id,
@@ -30,4 +39,3 @@ export async function GET(request: NextRequest) {
     );
   }
 }
-

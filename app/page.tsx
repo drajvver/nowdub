@@ -1,336 +1,203 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { JobStatusResponse } from '@/lib/types';
+import Link from 'next/link';
+import { useConvexAuth } from 'convex/react';
+import { useRouter } from 'next/navigation';
+import { useEffect } from 'react';
 
-interface UploadFormData {
-  subtitle: File | null;
-  audio: File | null;
-}
+export default function LandingPage() {
+  const { isAuthenticated, isLoading } = useConvexAuth();
+  const router = useRouter();
 
-export default function Home() {
-  const [formData, setFormData] = useState<UploadFormData>({
-    subtitle: null,
-    audio: null,
-  });
-  const [uploading, setUploading] = useState(false);
-  const [jobs, setJobs] = useState<JobStatusResponse[]>([]);
-  const [error, setError] = useState<string | null>(null);
-
-  // Poll for job updates
   useEffect(() => {
-    const fetchJobs = async () => {
-      try {
-        const response = await fetch('/api/jobs');
-        if (response.ok) {
-          const data = await response.json();
-          setJobs(data);
-        }
-      } catch (err) {
-        console.error('Error fetching jobs:', err);
-      }
-    };
-
-    fetchJobs();
-    const interval = setInterval(fetchJobs, 2000); // Poll every 2 seconds
-
-    return () => clearInterval(interval);
-  }, []);
-
-  const handleFileChange = (type: 'subtitle' | 'audio', file: File | null) => {
-    setFormData((prev) => ({ ...prev, [type]: file }));
-    setError(null);
-  };
-
-  const handleUpload = async (e: React.FormEvent) => {
-    e.preventDefault();
-
-    if (!formData.subtitle || !formData.audio) {
-      setError('Please select both a subtitle file and an audio file');
-      return;
+    if (!isLoading && isAuthenticated) {
+      router.push('/dashboard');
     }
-
-    setUploading(true);
-    setError(null);
-
-    try {
-      const formDataToSend = new FormData();
-      formDataToSend.append('subtitle', formData.subtitle);
-      formDataToSend.append('audio', formData.audio);
-
-      const response = await fetch('/api/upload', {
-        method: 'POST',
-        body: formDataToSend,
-      });
-
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || 'Upload failed');
-      }
-
-      const data = await response.json();
-      setFormData({ subtitle: null, audio: null });
-
-      // Refresh jobs
-      const jobsResponse = await fetch('/api/jobs');
-      if (jobsResponse.ok) {
-        const jobsData = await jobsResponse.json();
-        setJobs(jobsData);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Upload failed');
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const handleDeleteJob = async (jobId: string) => {
-    try {
-      const response = await fetch(`/api/jobs/${jobId}`, {
-        method: 'DELETE',
-      });
-
-      if (response.ok) {
-        setJobs((prev) => prev.filter((job) => job.id !== jobId));
-      }
-    } catch (err) {
-      console.error('Error deleting job:', err);
-    }
-  };
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'pending':
-        return 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200';
-      case 'processing':
-        return 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200';
-      case 'completed':
-        return 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200';
-      case 'failed':
-        return 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200';
-      default:
-        return 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200';
-    }
-  };
-
-  const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    return date.toLocaleString();
-  };
+  }, [isAuthenticated, isLoading, router]);
 
   return (
-    <div className="min-h-screen bg-zinc-50 dark:bg-black font-sans">
-      <div className="max-w-4xl mx-auto px-4 py-12">
-        <header className="mb-12 text-center">
-          <h1 className="text-4xl font-bold text-zinc-900 dark:text-zinc-50 mb-4">
-            Auto Dubbing Generator
-          </h1>
-          <p className="text-lg text-zinc-600 dark:text-zinc-400">
-            Generate TTS audio from subtitles and merge with your original audio track
-          </p>
-        </header>
-
-        <section className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg p-8 mb-8">
-          <h2 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-50 mb-6">
-            Upload Files
-          </h2>
-
-          <form onSubmit={handleUpload} className="space-y-6">
-            <div>
-              <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">
-                Subtitle File (.srt or .vtt)
-              </label>
-              <input
-                type="file"
-                accept=".srt,.vtt"
-                onChange={(e) => handleFileChange('subtitle', e.target.files?.[0] || null)}
-                className="block w-full text-sm text-zinc-500 dark:text-zinc-400
-                  file:mr-4 file:py-2 file:px-4
-                  file:rounded-full file:border-0
-                  file:text-sm file:font-semibold
-                  file:bg-zinc-100 dark:file:bg-zinc-800
-                  file:text-zinc-700 dark:file:text-zinc-300
-                  hover:file:bg-zinc-200 dark:hover:file:bg-zinc-700
-                  cursor-pointer"
-              />
-              {formData.subtitle && (
-                <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-                  Selected: {formData.subtitle.name}
-                </p>
-              )}
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">
-                Audio File (.mp3, .wav, .m4a, .aac, .ogg, .flac, .wma)
-              </label>
-              <input
-                type="file"
-                accept=".mp3,.wav,.m4a,.aac,.ogg,.flac,.wma"
-                onChange={(e) => handleFileChange('audio', e.target.files?.[0] || null)}
-                className="block w-full text-sm text-zinc-500 dark:text-zinc-400
-                  file:mr-4 file:py-2 file:px-4
-                  file:rounded-full file:border-0
-                  file:text-sm file:font-semibold
-                  file:bg-zinc-100 dark:file:bg-zinc-800
-                  file:text-zinc-700 dark:file:text-zinc-300
-                  hover:file:bg-zinc-200 dark:hover:file:bg-zinc-700
-                  cursor-pointer"
-              />
-              {formData.audio && (
-                <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-                  Selected: {formData.audio.name}
-                </p>
-              )}
-            </div>
-
-            {error && (
-              <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
-                <p className="text-sm text-red-800 dark:text-red-200">{error}</p>
-              </div>
-            )}
-
-            <button
-              type="submit"
-              disabled={uploading || !formData.subtitle || !formData.audio}
-              className="w-full py-3 px-4 bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900
-                rounded-lg font-medium hover:bg-zinc-800 dark:hover:bg-zinc-200
-                disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {uploading ? 'Uploading...' : 'Start Processing'}
-            </button>
-          </form>
-        </section>
-
-        <section>
-          <h2 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-50 mb-6">
-            Jobs
-          </h2>
-
-          {jobs.length === 0 ? (
-            <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg p-8 text-center">
-              <p className="text-zinc-600 dark:text-zinc-400">No jobs yet. Upload files to get started.</p>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {jobs.map((job) => (
-                <div
-                  key={job.id}
-                  className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg p-6"
-                >
-                  <div className="flex items-start justify-between mb-4">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-3 mb-2">
-                        <span
-                          className={`px-3 py-1 rounded-full text-xs font-medium ${getStatusColor(job.status)}`}
-                        >
-                          {job.status}
-                        </span>
-                        <span className="text-sm text-zinc-500 dark:text-zinc-400">
-                          {formatDate(job.createdAt)}
-                        </span>
-                      </div>
-
-                      {job.status === 'processing' && job.progress !== undefined && (
-                        <div className="mb-3">
-                          <div className="w-full bg-zinc-200 dark:bg-zinc-700 rounded-full h-2">
-                            <div
-                              className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-                              style={{ width: `${job.progress}%` }}
-                            />
-                          </div>
-                          <p className="text-sm text-zinc-600 dark:text-zinc-400 mt-1">
-                            {job.progress}% complete
-                          </p>
-                        </div>
-                      )}
-
-                      {job.error && (
-                        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3 mb-3">
-                          <p className="text-sm text-red-800 dark:text-red-200">{job.error}</p>
-                        </div>
-                      )}
-                    </div>
-
-                    <button
-                      onClick={() => handleDeleteJob(job.id)}
-                      className="text-zinc-400 hover:text-red-600 dark:hover:text-red-400 transition-colors"
-                      title="Delete job"
-                    >
-                      <svg
-                        className="w-5 h-5"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={2}
-                          d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                        />
-                      </svg>
-                    </button>
-                  </div>
-
-                  {job.status === 'completed' && job.downloads && (
-                    <div className="flex flex-wrap gap-3">
-                      {job.downloads.ttsAudio && (
-                        <a
-                          href={job.downloads.ttsAudio}
-                          download
-                          className="inline-flex items-center gap-2 px-4 py-2 bg-zinc-100 dark:bg-zinc-800
-                            text-zinc-700 dark:text-zinc-300 rounded-lg hover:bg-zinc-200 dark:hover:bg-zinc-700
-                            transition-colors text-sm font-medium"
-                        >
-                          <svg
-                            className="w-4 h-4"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth={2}
-                              d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
-                            />
-                          </svg>
-                          Download TTS Audio
-                        </a>
-                      )}
-                      {job.downloads.mergedAudio && (
-                        <a
-                          href={job.downloads.mergedAudio}
-                          download
-                          className="inline-flex items-center gap-2 px-4 py-2 bg-zinc-900 dark:bg-zinc-100
-                            text-white dark:text-zinc-900 rounded-lg hover:bg-zinc-800 dark:hover:bg-zinc-200
-                            transition-colors text-sm font-medium"
-                        >
-                          <svg
-                            className="w-4 h-4"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth={2}
-                              d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
-                            />
-                          </svg>
-                          Download Merged Audio
-                        </a>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 overflow-hidden">
+      {/* Background pattern */}
+      <div className="fixed inset-0 opacity-30">
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-amber-900/20 via-zinc-950 to-zinc-950" />
+        <div className="absolute inset-0" style={{
+          backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23fbbf24' fill-opacity='0.03'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E")`,
+        }} />
       </div>
+
+      {/* Navigation */}
+      <nav className="relative z-10 flex items-center justify-between px-6 py-4 lg:px-12">
+        <div className="text-2xl font-bold tracking-tight">
+          <span className="text-amber-400">Auto</span>
+          <span className="text-zinc-100">Lektor</span>
+        </div>
+        <div className="flex items-center gap-4">
+          {isLoading ? (
+            <div className="w-8 h-8 rounded-full border-2 border-amber-400 border-t-transparent animate-spin" />
+          ) : isAuthenticated ? (
+            <Link
+              href="/dashboard"
+              className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-zinc-900 font-semibold 
+                rounded-xl transition-all duration-200 shadow-lg shadow-amber-500/25"
+            >
+              Go to Dashboard
+            </Link>
+          ) : (
+            <>
+              <Link
+                href="/login"
+                className="px-5 py-2.5 text-zinc-300 hover:text-zinc-100 font-medium transition-colors"
+              >
+                Sign in
+              </Link>
+              <Link
+                href="/register"
+                className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-zinc-900 font-semibold 
+                  rounded-xl transition-all duration-200 shadow-lg shadow-amber-500/25"
+              >
+                Get Started
+              </Link>
+            </>
+          )}
+        </div>
+      </nav>
+
+      {/* Hero Section */}
+      <main className="relative z-10">
+        <section className="max-w-6xl mx-auto px-6 pt-20 pb-32 lg:pt-32">
+          <div className="text-center space-y-8">
+            <div className="inline-flex items-center gap-2 px-4 py-2 bg-amber-500/10 border border-amber-500/20 rounded-full">
+              <span className="w-2 h-2 bg-amber-400 rounded-full animate-pulse" />
+              <span className="text-sm text-amber-300 font-medium">AI-Powered Dubbing</span>
+            </div>
+            
+            <h1 className="text-5xl lg:text-7xl font-bold leading-tight">
+              <span className="block">Transform Your Audio</span>
+              <span className="block mt-2 bg-gradient-to-r from-amber-400 via-amber-300 to-amber-500 bg-clip-text text-transparent">
+                With AI Dubbing
+              </span>
+            </h1>
+            
+            <p className="max-w-2xl mx-auto text-xl text-zinc-400 leading-relaxed">
+              Upload your subtitles and audio files, and let our AI generate perfectly synchronized 
+              dubbing that blends seamlessly with your original track.
+            </p>
+            
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-4 pt-4">
+              {!isAuthenticated && !isLoading && (
+                <>
+                  <Link
+                    href="/register"
+                    className="w-full sm:w-auto px-8 py-4 bg-amber-500 hover:bg-amber-400 text-zinc-900 
+                      font-bold text-lg rounded-xl transition-all duration-200 
+                      shadow-xl shadow-amber-500/30 hover:shadow-amber-400/40 hover:scale-105"
+                  >
+                    Start Free
+                  </Link>
+                  <Link
+                    href="/login"
+                    className="w-full sm:w-auto px-8 py-4 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 
+                      font-semibold text-lg rounded-xl transition-all duration-200 border border-zinc-700"
+                  >
+                    Sign in
+                  </Link>
+                </>
+              )}
+            </div>
+          </div>
+        </section>
+
+        {/* Features Section */}
+        <section className="max-w-6xl mx-auto px-6 pb-32">
+          <div className="grid md:grid-cols-3 gap-8">
+            <div className="group bg-zinc-900/50 border border-zinc-800 rounded-2xl p-8 hover:border-amber-500/30 transition-all duration-300">
+              <div className="w-14 h-14 bg-amber-500/10 rounded-xl flex items-center justify-center mb-6 group-hover:bg-amber-500/20 transition-colors">
+                <svg className="w-7 h-7 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                </svg>
+              </div>
+              <h3 className="text-xl font-bold text-zinc-100 mb-3">Easy Upload</h3>
+              <p className="text-zinc-400 leading-relaxed">
+                Simply upload your subtitle file (.srt or .vtt) and audio track. We support all major audio formats.
+              </p>
+            </div>
+
+            <div className="group bg-zinc-900/50 border border-zinc-800 rounded-2xl p-8 hover:border-amber-500/30 transition-all duration-300">
+              <div className="w-14 h-14 bg-amber-500/10 rounded-xl flex items-center justify-center mb-6 group-hover:bg-amber-500/20 transition-colors">
+                <svg className="w-7 h-7 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                </svg>
+              </div>
+              <h3 className="text-xl font-bold text-zinc-100 mb-3">AI-Powered TTS</h3>
+              <p className="text-zinc-400 leading-relaxed">
+                Our advanced text-to-speech engine generates natural-sounding voiceovers that match your subtitle timing.
+              </p>
+            </div>
+
+            <div className="group bg-zinc-900/50 border border-zinc-800 rounded-2xl p-8 hover:border-amber-500/30 transition-all duration-300">
+              <div className="w-14 h-14 bg-amber-500/10 rounded-xl flex items-center justify-center mb-6 group-hover:bg-amber-500/20 transition-colors">
+                <svg className="w-7 h-7 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
+                </svg>
+              </div>
+              <h3 className="text-xl font-bold text-zinc-100 mb-3">Smart Mixing</h3>
+              <p className="text-zinc-400 leading-relaxed">
+                Automatic sidechain compression ducks your original audio when dubbing plays, creating professional results.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        {/* How It Works Section */}
+        <section className="max-w-6xl mx-auto px-6 pb-32">
+          <h2 className="text-3xl lg:text-4xl font-bold text-center mb-16">
+            How It <span className="text-amber-400">Works</span>
+          </h2>
+          <div className="grid md:grid-cols-4 gap-8">
+            {[
+              { step: '01', title: 'Upload', desc: 'Add your subtitle and audio files' },
+              { step: '02', title: 'Process', desc: 'Our AI generates the voiceover' },
+              { step: '03', title: 'Mix', desc: 'Smart audio mixing is applied' },
+              { step: '04', title: 'Download', desc: 'Get your dubbed audio file' },
+            ].map((item, i) => (
+              <div key={i} className="text-center">
+                <div className="text-5xl font-bold text-amber-500/20 mb-4">{item.step}</div>
+                <h3 className="text-xl font-bold text-zinc-100 mb-2">{item.title}</h3>
+                <p className="text-zinc-400">{item.desc}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* CTA Section */}
+        {!isAuthenticated && !isLoading && (
+          <section className="max-w-4xl mx-auto px-6 pb-32">
+            <div className="bg-gradient-to-br from-amber-500/10 to-amber-600/5 border border-amber-500/20 rounded-3xl p-12 text-center">
+              <h2 className="text-3xl lg:text-4xl font-bold mb-4">
+                Ready to transform your audio?
+              </h2>
+              <p className="text-xl text-zinc-400 mb-8">
+                Join Auto Lektor today and start creating professional dubbing in minutes.
+              </p>
+              <Link
+                href="/register"
+                className="inline-flex px-8 py-4 bg-amber-500 hover:bg-amber-400 text-zinc-900 
+                  font-bold text-lg rounded-xl transition-all duration-200 
+                  shadow-xl shadow-amber-500/30 hover:shadow-amber-400/40"
+              >
+                Get Started for Free
+              </Link>
+            </div>
+          </section>
+        )}
+      </main>
+
+      {/* Footer */}
+      <footer className="relative z-10 border-t border-zinc-800 py-8">
+        <div className="max-w-6xl mx-auto px-6 text-center text-zinc-500">
+          <p>&copy; {new Date().getFullYear()} Auto Lektor. AI-Powered Dubbing Generator.</p>
+        </div>
+      </footer>
     </div>
   );
 }

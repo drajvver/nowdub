@@ -3,6 +3,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { createJobTempDir, isSubtitleFile, isAudioFile, validateFileSize, generateUniqueFilename } from '@/lib/utils';
 import { createJob } from '@/lib/job-manager';
+import { requireAuth } from '@/lib/auth-middleware';
 
 // Maximum file size: 100MB
 const MAX_FILE_SIZE = 100 * 1024 * 1024;
@@ -10,6 +11,15 @@ const MAX_FILE_SIZE = 100 * 1024 * 1024;
 export async function POST(request: NextRequest) {
   console.log('[UPLOAD] Received upload request');
   const startTime = Date.now();
+  
+  // Check authentication
+  const authResult = await requireAuth(request);
+  if (authResult instanceof NextResponse) {
+    console.log('[UPLOAD] Unauthorized request');
+    return authResult;
+  }
+  const { user } = authResult;
+  console.log(`[UPLOAD] Authenticated user: ${user.id}`);
   
   try {
     const formData = await request.formData();
@@ -90,8 +100,8 @@ export async function POST(request: NextRequest) {
     await fs.writeFile(audioPath, audioBuffer);
     console.log(`[UPLOAD] Saved audio: ${audioPath}`);
 
-    // Create job
-    const job = createJob(subtitlePath, audioPath);
+    // Create job with user ID
+    const job = createJob(subtitlePath, audioPath, user.id);
 
     const duration = Date.now() - startTime;
     console.log(`[UPLOAD] Upload completed in ${duration}ms, job ID: ${job.id}`);
@@ -109,4 +119,3 @@ export async function POST(request: NextRequest) {
     );
   }
 }
-
