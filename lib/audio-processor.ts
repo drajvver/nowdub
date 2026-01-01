@@ -133,8 +133,8 @@ export async function applySidechainCompression(
   const opts = {
     threshold: options?.threshold ?? -35,
     ratio: options?.ratio ?? 15,
-    attack: options?.attack ?? 200, // in milliseconds
-    release: options?.release ?? 800, // in milliseconds
+    attack: options?.attack ?? 10, // in milliseconds (fast attack for immediate ducking)
+    release: options?.release ?? 500, // in milliseconds (faster release)
     makeupGain: options?.makeupGain ?? 0,
   };
 
@@ -159,16 +159,22 @@ export async function applySidechainCompression(
     // Try using sidechaincompress filter (designed for this purpose)
     // Syntax: [main][sidechain]sidechaincompress=threshold=X:ratio=Y:attack=Z:release=W
     command.complexFilter([
-      // Use sidechaincompress: original audio (input 0) is compressed based on TTS (input 1)
-      `[0:a][1:a]sidechaincompress=threshold=${opts.threshold}dB:ratio=${opts.ratio}:attack=${attackSeconds}:release=${releaseSeconds}[ducked_original]`,
-      // Mix the ducked original with TTS audio
-      `[ducked_original][1:a]amix=inputs=2:duration=first:dropout_transition=2`
+      // 1. Apply sidechain compression to the original audio (ducking it when TTS speaks)
+      //    We use a lower threshold and high ratio to ensure significant ducking
+      `[0:a][1:a]sidechaincompress=threshold=-40dB:ratio=20:attack=5:release=200[ducked_original]`,
+      // 2. Mix the ducked original with the TTS audio
+      //    normalize=0 keeps the original volume levels (instead of dropping by 6dB)
+      //    This satisfies "original audio should be the same volume when TTS is not overlayed"
+      `[ducked_original][1:a]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[mixed]`,
+      // 3. Add a limiter to prevent any residual clipping on the final output
+      `[mixed]alimiter=limit=0.95:attack=5:release=50:asc=1`
     ])
       .audioCodec('libmp3lame')
+      .audioBitrate('320k')
       .audioFrequency(44100)
       .audioChannels(2)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .on('error', (err) => {
+      .on('error', (err: any) => {
         console.error(`[AUDIO] FFmpeg error applying sidechain compression:`, err);
         reject(new Error(`FFmpeg error: ${err.message}`));
       })
