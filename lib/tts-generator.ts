@@ -312,6 +312,9 @@ export async function generateTTSWithTiming(
   await fs.mkdir(tempDir, { recursive: true });
   console.log(`[TTS] Created temp directory: ${tempDir}`);
 
+  // Sort segments by start time to ensure correct order
+  segments.sort((a, b) => a.start - b.start);
+
   // Track credit usage
   let creditUsage: CreditUsage = { cacheHits: 0, cacheMisses: 0, totalCredits: 0 };
 
@@ -372,6 +375,14 @@ export async function generateTTSWithTiming(
     // Create audio files with silence, adjusting gaps to compensate for drift
     const audioWithSilence: string[] = [];
     let currentDrift = 0; // Track drift up to current position
+
+    // Check for initial silence (before first segment)
+    if (segments.length > 0 && segments[0].start > 0.05) {
+      console.log(`[TTS] Adding initial silence of ${segments[0].start.toFixed(2)}s`);
+      const initialSilenceFile = path.join(tempDir, 'silence_initial.mp3');
+      await insertSilence(initialSilenceFile, segments[0].start);
+      audioWithSilence.push(initialSilenceFile);
+    }
 
     console.log(`[TTS] Processing ${segments.length} segments for final output`);
     console.log(`[TTS] Segment files available: ${segmentFiles.length}`);
