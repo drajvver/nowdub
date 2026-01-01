@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { promises as fs } from 'fs';
+import { createReadStream } from 'fs';
 import { getJobForUser } from '@/lib/job-manager';
 import { fileExists } from '@/lib/utils';
 import { requireAuth } from '@/lib/auth-middleware';
@@ -88,18 +89,22 @@ export async function GET(
       );
     }
 
-    // Read file
-    console.log(`[DOWNLOAD] Reading file: ${filePath}`);
-    const fileBuffer = await fs.readFile(filePath);
-
-    // Return file with appropriate headers
+    // Stream file to avoid loading entire file into memory
+    console.log(`[DOWNLOAD] Streaming file: ${filePath}`);
+    const fileStream = createReadStream(filePath);
+    
+    // Get file size for Content-Length header (optional but helpful)
+    const stats = await fs.stat(filePath);
+    const fileSize = stats.size;
+    
+    // Return streaming response
     const duration = Date.now() - startTime;
-    console.log(`[DOWNLOAD] Sending ${fileBuffer.length} bytes in ${duration}ms`);
-    return new NextResponse(fileBuffer, {
+    console.log(`[DOWNLOAD] Streaming ${fileSize} bytes in ${duration}ms`);
+    return new NextResponse(fileStream as any, {
       headers: {
         'Content-Type': 'audio/mpeg',
         'Content-Disposition': `attachment; filename="${filename}"`,
-        'Content-Length': fileBuffer.length.toString(),
+        'Content-Length': fileSize.toString(),
       },
     });
   } catch (error) {

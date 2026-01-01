@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { promises as fs } from 'fs';
+import { createWriteStream } from 'fs';
+import { pipeline } from 'stream/promises';
 import path from 'path';
 import { createJobTempDir, isSubtitleFile, isAudioFile, validateFileSize, generateUniqueFilename } from '@/lib/utils';
 import { createJob } from '@/lib/job-manager';
@@ -86,18 +88,20 @@ export async function POST(request: NextRequest) {
     const tempDir = await createJobTempDir(jobId);
     console.log(`[UPLOAD] Created temp directory: ${tempDir}`);
 
-    // Save subtitle file
+    // Save subtitle file (streaming to avoid loading entire file into memory)
     const subtitleFilename = generateUniqueFilename(subtitleFile.name);
     const subtitlePath = path.join(tempDir, subtitleFilename);
-    const subtitleBuffer = Buffer.from(await subtitleFile.arrayBuffer());
-    await fs.writeFile(subtitlePath, subtitleBuffer);
+    const subtitleStream = subtitleFile.stream();
+    const subtitleWriteStream = createWriteStream(subtitlePath);
+    await pipeline(subtitleStream, subtitleWriteStream);
     console.log(`[UPLOAD] Saved subtitle: ${subtitlePath}`);
 
-    // Save audio file
+    // Save audio file (streaming to avoid loading entire file into memory)
     const audioFilename = generateUniqueFilename(audioFile.name);
     const audioPath = path.join(tempDir, audioFilename);
-    const audioBuffer = Buffer.from(await audioFile.arrayBuffer());
-    await fs.writeFile(audioPath, audioBuffer);
+    const audioStream = audioFile.stream();
+    const audioWriteStream = createWriteStream(audioPath);
+    await pipeline(audioStream, audioWriteStream);
     console.log(`[UPLOAD] Saved audio: ${audioPath}`);
 
     // Create job with user ID

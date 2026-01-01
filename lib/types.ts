@@ -58,13 +58,15 @@ export interface CreditTransaction {
   userId: string;
   jobId?: string;
   amount: number;
-  type: 'initial' | 'job_deduction' | 'admin_adjustment';
+  type: 'initial' | 'job_deduction' | 'admin_adjustment' | 'reservation' | 'reservation_release';
   description: string;
   createdAt: number;
 }
 
 export interface UserCredits {
   balance: number | null;
+  reservedCredits?: number;
+  availableBalance?: number | null;
   isInitialized: boolean;
   recentTransactions: CreditTransaction[];
 }

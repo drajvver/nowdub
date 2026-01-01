@@ -6,13 +6,15 @@ const convex = getConvexClient();
 
 export interface CreditResponse {
   balance: number | null;
+  reservedCredits: number;
+  availableBalance: number | null;
   isInitialized: boolean;
   recentTransactions: {
     _id: string;
     userId: string;
     jobId?: string;
     amount: number;
-    type: 'initial' | 'job_deduction' | 'admin_adjustment';
+    type: 'initial' | 'job_deduction' | 'admin_adjustment' | 'reservation' | 'reservation_release';
     description: string;
     createdAt: number;
   }[];
@@ -37,6 +39,8 @@ export async function GET(request: NextRequest) {
 
     const response: CreditResponse = {
       balance: creditsData.balance,
+      reservedCredits: creditsData.reservedCredits ?? 0,
+      availableBalance: creditsData.availableBalance,
       isInitialized: creditsData.isInitialized,
       recentTransactions: creditsData.recentTransactions.map((tx: any) => ({
         _id: tx._id,

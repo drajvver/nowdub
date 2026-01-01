@@ -1,4 +1,5 @@
 import { promises as fs } from 'fs';
+import { createReadStream } from 'fs';
 
 // Bunny Storage configuration
 const BUNNY_STORAGE_ZONE = 'dubber';
@@ -33,8 +34,8 @@ export async function uploadFileToBunny(
   }
 
   try {
-    // Read the file
-    const fileBuffer = await fs.readFile(localPath);
+    // Stream the file to avoid loading entire file into memory
+    const fileStream = createReadStream(localPath);
     
     // Upload to Bunny Storage
     const uploadUrl = `${BUNNY_STORAGE_URL}/${storagePath}`;
@@ -46,7 +47,7 @@ export async function uploadFileToBunny(
         'AccessKey': apiKey,
         'Content-Type': 'application/octet-stream',
       },
-      body: fileBuffer,
+      body: fileStream as any, // Stream directly instead of loading into memory
     });
 
     if (!response.ok) {

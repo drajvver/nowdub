@@ -76,6 +76,8 @@ export function useUserCredits() {
   return {
     credits,
     balance: credits?.balance ?? null,
+    availableBalance: credits?.availableBalance ?? credits?.balance ?? null,
+    reservedCredits: credits?.reservedCredits ?? 0,
     isInitialized: credits?.isInitialized ?? false,
     transactions: credits?.recentTransactions ?? [],
     loading,

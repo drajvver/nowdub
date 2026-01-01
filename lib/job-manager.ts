@@ -17,22 +17,29 @@ const jobQueue: Id<"jobs">[] = [];
 const convex = getConvexClient();
 
 /**
- * Initialize user credits if needed and check balance
+ * Initialize user credits if needed and check balance (considering reserved credits)
  */
 export async function initializeAndCheckCredits(userId: string, estimatedLines: number): Promise<{ 
-  balance: number; 
+  balance: number;
+  availableBalance: number;
   hasEnough: boolean;
   estimatedCost: number;
 }> {
   // Initialize credits (will return existing balance if already initialized)
   const balance = await convex.mutation(api.credits.initializeUserCredits, { userId });
   
+  // Get current credits to check reserved amount
+  const credits = await convex.query(api.credits.getUserCreditsWithHistory, { userId });
+  const reservedCredits = credits?.reservedCredits ?? 0;
+  const availableBalance = balance - reservedCredits;
+  
   // Conservative estimate: assume all lines are cache misses (1 credit each)
   const estimatedCost = estimatedLines;
   
   return {
     balance,
-    hasEnough: balance >= estimatedCost,
+    availableBalance,
+    hasEnough: availableBalance >= estimatedCost,
     estimatedCost,
   };
 }
@@ -56,29 +63,77 @@ export async function checkCredits(userId: string, estimatedLines: number): Prom
 }
 
 /**
- * Deduct credits after job completion
+ * Reserve credits before job processing starts
  */
-async function deductCreditsForJob(
-  userId: string, 
-  jobId: string, 
-  creditsUsed: number,
-  cacheHits: number,
-  cacheMisses: number
-): Promise<void> {
+async function reserveCreditsForJob(
+  userId: string,
+  jobId: string,
+  estimatedCredits: number
+): Promise<boolean> {
   try {
-    const description = `TTS generation: ${cacheHits} cached (0.5 ea) + ${cacheMisses} new (1.0 ea) = ${creditsUsed.toFixed(1)} credits`;
+    const description = `Reserved ${estimatedCredits.toFixed(1)} credits for job processing`;
     
-    await convex.mutation(api.credits.deductCredits, {
+    await convex.mutation(api.credits.reserveCredits, {
       userId,
-      amount: creditsUsed,
+      amount: estimatedCredits,
       jobId,
       description,
     });
     
-    console.log(`[CREDITS] Deducted ${creditsUsed.toFixed(1)} credits from user ${userId} for job ${jobId}`);
+    console.log(`[CREDITS] Reserved ${estimatedCredits.toFixed(1)} credits for user ${userId} for job ${jobId}`);
+    return true;
   } catch (error) {
-    console.error(`[CREDITS] Error deducting credits for job ${jobId}:`, error);
-    // Don't throw - credits deduction failure shouldn't fail the job
+    console.error(`[CREDITS] Error reserving credits for job ${jobId}:`, error);
+    return false;
+  }
+}
+
+/**
+ * Finalize credits after job completion (deduct actual or release if failed)
+ */
+async function finalizeCreditsForJob(
+  userId: string,
+  jobId: string,
+  reservedAmount: number,
+  actualCreditsUsed: number | null,
+  cacheHits: number,
+  cacheMisses: number,
+  jobSucceeded: boolean
+): Promise<void> {
+  try {
+    if (jobSucceeded && actualCreditsUsed !== null) {
+      const description = `TTS generation: ${cacheHits} cached (0.5 ea) + ${cacheMisses} new (1.0 ea) = ${actualCreditsUsed.toFixed(1)} credits`;
+      
+      await convex.mutation(api.credits.finalizeCredits, {
+        userId,
+        jobId,
+        reservedAmount,
+        actualAmount: actualCreditsUsed,
+        description,
+      });
+      
+      if (actualCreditsUsed < reservedAmount) {
+        console.log(`[CREDITS] Deducted ${actualCreditsUsed.toFixed(1)} credits (refunded ${(reservedAmount - actualCreditsUsed).toFixed(1)}) for job ${jobId}`);
+      } else {
+        console.log(`[CREDITS] Deducted ${actualCreditsUsed.toFixed(1)} credits from user ${userId} for job ${jobId}`);
+      }
+    } else {
+      // Job failed - release all reserved credits
+      const description = `Job failed - released ${reservedAmount.toFixed(1)} reserved credits`;
+      
+      await convex.mutation(api.credits.finalizeCredits, {
+        userId,
+        jobId,
+        reservedAmount,
+        release: true,
+        description,
+      });
+      
+      console.log(`[CREDITS] Released ${reservedAmount.toFixed(1)} reserved credits for failed job ${jobId}`);
+    }
+  } catch (error) {
+    console.error(`[CREDITS] Error finalizing credits for job ${jobId}:`, error);
+    // Don't throw - credits finalization failure shouldn't fail the job
   }
 }
 
@@ -410,11 +465,36 @@ async function processJob(jobId: Id<"jobs">): Promise<void> {
   console.log(`[JOB] ${jobId}: Starting processing...`);
   const startTime = Date.now();
 
+  // Reserve credits before processing starts
+  let reservedAmount = 0;
+  let creditsReserved = false;
+
   try {
     await updateJobStatus(jobId, 'processing', 0);
 
-    // Import modules dynamically to avoid circular dependencies
+    // Estimate credits needed and reserve them
     const { parseSubtitleFile } = await import('./subtitle-parser');
+    const subtitleContent = await fs.readFile(job.files.subtitle, 'utf-8');
+    const segments = parseSubtitleFile(subtitleContent);
+    const estimatedCredits = segments.length; // Conservative: 1 credit per segment
+    
+    // Reserve credits
+    creditsReserved = await reserveCreditsForJob(job.userId, jobId, estimatedCredits);
+    reservedAmount = estimatedCredits;
+    
+    if (!creditsReserved) {
+      throw new Error('Failed to reserve credits - insufficient balance');
+    }
+    
+    // Update job with reserved amount
+    await convex.mutation(api.jobs.updateJobStatus, {
+      jobId,
+      status: 'processing',
+      progress: 0,
+      creditsReserved: reservedAmount,
+    });
+
+    // Import modules dynamically to avoid circular dependencies
     const { generateTTSWithTiming } = await import('./tts-generator');
     const { applySidechainCompression, convertToMP3 } = await import('./audio-processor');
 
@@ -428,12 +508,9 @@ async function processJob(jobId: Id<"jobs">): Promise<void> {
     await fs.mkdir(outputDir, { recursive: true });
     console.log(`[JOB] ${jobId}: Output directory: ${outputDir}`);
 
-    // Read and parse subtitle file
+    // Parse subtitle file (already read above for credit estimation)
     await updateJobStatus(jobId, 'processing', 10);
-    console.log(`[JOB] ${jobId}: Reading subtitle file: ${job.files.subtitle}`);
-    const subtitleContent = await fs.readFile(job.files.subtitle, 'utf-8');
-    const segments = parseSubtitleFile(subtitleContent);
-    console.log(`[JOB] ${jobId}: Parsed ${segments.length} subtitle segments`);
+    console.log(`[JOB] ${jobId}: Using parsed subtitle segments (${segments.length} segments)`);
 
     // Generate TTS audio with timing
     await updateJobStatus(jobId, 'processing', 20);
@@ -450,14 +527,8 @@ async function processJob(jobId: Id<"jobs">): Promise<void> {
     console.log(`[JOB] ${jobId}: TTS audio generated: ${ttsAudioPath}`);
     console.log(`[JOB] ${jobId}: Credit usage - ${creditUsage.cacheHits} cache hits, ${creditUsage.cacheMisses} cache misses, total: ${creditUsage.totalCredits} credits`);
 
-    // Deduct credits for this job
-    await deductCreditsForJob(
-      job.userId,
-      jobId,
-      creditUsage.totalCredits,
-      creditUsage.cacheHits,
-      creditUsage.cacheMisses
-    );
+    // Credits will be finalized after job completion
+    const actualCreditsUsed = creditUsage.totalCredits;
 
     await updateJobFiles(jobId, { ttsAudio: ttsAudioPath });
 
@@ -538,13 +609,38 @@ async function processJob(jobId: Id<"jobs">): Promise<void> {
       console.log(`[JOB] ${jobId}: No temporary audio to clean up`);
     }
 
+    // Finalize credits (deduct actual amount used)
+    await finalizeCreditsForJob(
+      job.userId,
+      jobId,
+      reservedAmount,
+      actualCreditsUsed,
+      creditUsage.cacheHits,
+      creditUsage.cacheMisses,
+      true // job succeeded
+    );
+
     // Mark job as completed with credits used
     const duration = Date.now() - startTime;
     console.log(`[JOB] ${jobId}: Processing completed in ${duration}ms`);
-    await updateJobStatus(jobId, 'completed', 100, undefined, creditUsage.totalCredits);
+    await updateJobStatus(jobId, 'completed', 100, undefined, actualCreditsUsed);
   } catch (error) {
     const duration = Date.now() - startTime;
     console.error(`[JOB] ${jobId}: Error after ${duration}ms:`, error);
+    
+    // Release reserved credits if job failed
+    if (creditsReserved && reservedAmount > 0) {
+      await finalizeCreditsForJob(
+        job.userId,
+        jobId,
+        reservedAmount,
+        null,
+        0,
+        0,
+        false // job failed
+      );
+    }
+    
     await updateJobStatus(
       jobId,
       'failed',

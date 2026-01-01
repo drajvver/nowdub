@@ -37,7 +37,7 @@ function countSubtitleLines(content: string): number {
 
 export default function DashboardPage() {
   const token = useConvexAuthToken();
-  const { balance, loading: creditsLoading, refetch: refetchCredits, transactions } = useUserCredits();
+  const { balance, credits, loading: creditsLoading, refetch: refetchCredits, transactions } = useUserCredits();
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [formData, setFormData] = useState<UploadFormData>({
     subtitle: null,
@@ -240,9 +240,12 @@ export default function DashboardPage() {
     return date.toLocaleString();
   };
 
-  // Check if user has enough credits for the upload
-  const hasEnoughCredits = balance !== null && creditEstimate 
-    ? balance >= creditEstimate.maxCredits 
+  // Check if user has enough credits for the upload (use available balance)
+  const availableBalance = credits?.availableBalance !== null && credits?.availableBalance !== undefined
+    ? credits.availableBalance
+    : balance;
+  const hasEnoughCredits = availableBalance !== null && creditEstimate 
+    ? availableBalance >= creditEstimate.maxCredits 
     : true;
 
   return (
@@ -259,10 +262,21 @@ export default function DashboardPage() {
             {creditsLoading ? (
               <span className="text-zinc-400 text-sm">Loading...</span>
             ) : (
-              <span className="text-zinc-100 font-semibold">
-                {balance !== null ? balance.toFixed(1) : '0'} 
-                <span className="text-zinc-400 font-normal ml-1">credits</span>
-              </span>
+              <div className="flex flex-col items-end">
+                <span className="text-zinc-100 font-semibold">
+                  {credits?.availableBalance !== null && credits?.availableBalance !== undefined 
+                    ? credits.availableBalance.toFixed(1) 
+                    : balance !== null 
+                    ? balance.toFixed(1) 
+                    : '0'} 
+                  <span className="text-zinc-400 font-normal ml-1">credits</span>
+                </span>
+                {credits?.reservedCredits && credits.reservedCredits > 0 && (
+                  <span className="text-xs text-zinc-500">
+                    {balance !== null ? balance.toFixed(1) : '0'} total ({credits.reservedCredits.toFixed(1)} reserved)
+                  </span>
+                )}
+              </div>
             )}
           </div>
         </div>

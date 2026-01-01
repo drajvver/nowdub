@@ -27,6 +27,7 @@ export default defineSchema({
     createdAt: v.number(), // timestamp
     completedAt: v.optional(v.number()), // timestamp
     creditsUsed: v.optional(v.float64()), // credits consumed by this job
+    creditsReserved: v.optional(v.float64()), // credits reserved for this job
   })
     .index("by_user", ["userId"])
     .index("by_status", ["status"])
@@ -36,6 +37,7 @@ export default defineSchema({
   userCredits: defineTable({
     userId: v.string(),
     balance: v.float64(), // current credit balance
+    reservedCredits: v.optional(v.float64()), // credits reserved for in-progress jobs
     updatedAt: v.number(), // timestamp
   })
     .index("by_user", ["userId"]),
@@ -48,7 +50,9 @@ export default defineSchema({
     type: v.union(
       v.literal("initial"),
       v.literal("job_deduction"),
-      v.literal("admin_adjustment")
+      v.literal("admin_adjustment"),
+      v.literal("reservation"),
+      v.literal("reservation_release")
     ),
     description: v.string(),
     createdAt: v.number(), // timestamp
