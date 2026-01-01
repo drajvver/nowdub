@@ -202,6 +202,39 @@ export default function DashboardPage() {
     }
   };
 
+  // Check if URL is a CDN URL (external) or local API URL
+  const isCdnUrl = (url: string) => url.startsWith('https://');
+
+  // Handle download click - force download for all URLs
+  const handleDownload = async (url: string, filename: string) => {
+    try {
+      // For CDN URLs, fetch directly. For API URLs, add auth headers
+      const fetchOptions = isCdnUrl(url) 
+        ? {} 
+        : createAuthFetchOptions(token || '', { credentials: 'include' });
+
+      const response = await fetch(url, fetchOptions);
+
+      if (!response.ok) {
+        throw new Error('Download failed');
+      }
+
+      // Create blob and trigger download (forces download instead of playback)
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+      console.error('Download error:', err);
+      setError('Failed to download file');
+    }
+  };
+
   const formatDate = (dateString: string) => {
     const date = new Date(dateString);
     return date.toLocaleString();
@@ -453,11 +486,10 @@ export default function DashboardPage() {
                 {job.status === 'completed' && job.downloads && (
                   <div className="flex flex-wrap gap-3 pt-2 border-t border-zinc-800">
                     {job.downloads.ttsAudio && (
-                      <a
-                        href={job.downloads.ttsAudio}
-                        download
+                      <button
+                        onClick={() => handleDownload(job.downloads!.ttsAudio!, `tts_audio_${job.id}.mp3`)}
                         className="inline-flex items-center gap-2 px-4 py-2 bg-zinc-800 hover:bg-zinc-700
-                          text-zinc-300 rounded-xl transition-colors text-sm font-medium"
+                          text-zinc-300 rounded-xl transition-colors text-sm font-medium cursor-pointer"
                       >
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path
@@ -468,14 +500,13 @@ export default function DashboardPage() {
                           />
                         </svg>
                         TTS Audio
-                      </a>
+                      </button>
                     )}
                     {job.downloads.mergedAudio && (
-                      <a
-                        href={job.downloads.mergedAudio}
-                        download
+                      <button
+                        onClick={() => handleDownload(job.downloads!.mergedAudio!, `merged_audio_${job.id}.mp3`)}
                         className="inline-flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-400
-                          text-zinc-900 rounded-xl transition-colors text-sm font-semibold
+                          text-zinc-900 rounded-xl transition-colors text-sm font-semibold cursor-pointer
                           shadow-lg shadow-amber-500/25"
                       >
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -487,7 +518,7 @@ export default function DashboardPage() {
                           />
                         </svg>
                         Merged Audio
-                      </a>
+                      </button>
                     )}
                   </div>
                 )}

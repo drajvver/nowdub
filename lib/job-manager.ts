@@ -248,6 +248,24 @@ export async function getJobsByUser(userId: string): Promise<DubbingJob[]> {
 }
 
 /**
+ * Delete a file - handles both local files and Bunny CDN URLs
+ */
+async function deleteFileOrCdnUrl(filePath: string): Promise<void> {
+  const { isBunnyCdnUrl, getStoragePathFromCdnUrl, deleteFileFromBunny } = await import('./bunny-storage');
+  
+  if (isBunnyCdnUrl(filePath)) {
+    // Delete from Bunny Storage
+    const storagePath = getStoragePathFromCdnUrl(filePath);
+    if (storagePath) {
+      await deleteFileFromBunny(storagePath);
+    }
+  } else {
+    // Delete local file
+    await fs.unlink(filePath);
+  }
+}
+
+/**
  * Delete a job and clean up files
  */
 export async function deleteJob(jobId: string): Promise<void> {
@@ -269,7 +287,7 @@ export async function deleteJob(jobId: string): Promise<void> {
 
       for (const filePath of filesToDelete) {
         try {
-          await fs.unlink(filePath as string);
+          await deleteFileOrCdnUrl(filePath as string);
         } catch (error) {
           // Ignore errors if file doesn't exist
           console.error(`Error deleting file ${filePath}:`, error);
@@ -302,7 +320,7 @@ export async function deleteJobForUser(jobId: string, userId: string): Promise<b
 
       for (const filePath of filesToDelete) {
         try {
-          await fs.unlink(filePath as string);
+          await deleteFileOrCdnUrl(filePath as string);
         } catch (error) {
           // Ignore errors if file doesn't exist
           console.error(`Error deleting file ${filePath}:`, error);
@@ -335,7 +353,7 @@ export async function cleanupOldJobs(maxAge: number = 3600000): Promise<void> {
 
       for (const filePath of filesToDelete) {
         try {
-          await fs.unlink(filePath as string);
+          await deleteFileOrCdnUrl(filePath as string);
         } catch (error) {
           // Ignore errors if file doesn't exist
           console.error(`Error deleting file ${filePath}:`, error);
@@ -475,9 +493,46 @@ async function processJob(jobId: Id<"jobs">): Promise<void> {
 
     await updateJobFiles(jobId, { mergedAudio: mergedAudioPath });
 
+    // Upload to Bunny Storage
+    await updateJobStatus(jobId, 'processing', 85);
+    console.log(`[JOB] ${jobId}: Uploading files to Bunny Storage...`);
+    const { uploadJobFilesToBunny } = await import('./bunny-storage');
+    const { ttsAudioUrl, mergedAudioUrl } = await uploadJobFilesToBunny(
+      job.userId,
+      jobId,
+      ttsAudioPath,
+      mergedAudioPath
+    );
+
+    // If both uploads succeeded, update job files with CDN URLs and delete local files
+    if (ttsAudioUrl && mergedAudioUrl) {
+      console.log(`[JOB] ${jobId}: Bunny upload successful, updating job files with CDN URLs`);
+      await updateJobFiles(jobId, { 
+        ttsAudio: ttsAudioUrl, 
+        mergedAudio: mergedAudioUrl 
+      });
+      
+      // Delete local output files after successful upload
+      try {
+        await fs.unlink(ttsAudioPath);
+        //await fs.unlink(mergedAudioPath);
+        console.log(`[JOB] ${jobId}: Deleted local output files after CDN upload`);
+      } catch (cleanupError) {
+        console.warn(`[JOB] ${jobId}: Failed to delete local files after upload:`, cleanupError);
+      }
+    } else {
+      console.warn(`[JOB] ${jobId}: Bunny upload failed for some files, keeping local files`);
+      if (ttsAudioUrl) {
+        console.log(`[JOB] ${jobId}: TTS audio uploaded: ${ttsAudioUrl}`);
+      }
+      if (mergedAudioUrl) {
+        console.log(`[JOB] ${jobId}: Merged audio uploaded: ${mergedAudioUrl}`);
+      }
+    }
+
     // Clean up converted audio
     try {
-      // await fs.unlink(convertedAudioPath);
+      await fs.unlink(convertedAudioPath);
       console.log(`[JOB] ${jobId}: Cleaned up temporary audio: ${convertedAudioPath}`);
     } catch (error) {
       console.log(`[JOB] ${jobId}: No temporary audio to clean up`);

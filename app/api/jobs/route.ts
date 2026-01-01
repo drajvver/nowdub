@@ -2,6 +2,21 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getJobsByUser } from '@/lib/job-manager';
 import { JobStatusResponse } from '@/lib/types';
 import { requireAuth } from '@/lib/auth-middleware';
+import { isBunnyCdnUrl } from '@/lib/bunny-storage';
+
+/**
+ * Get the download URL for a file - returns CDN URL directly if available,
+ * otherwise returns the API download endpoint
+ */
+function getDownloadUrl(filePath: string | undefined, jobId: string, type: 'tts' | 'merged'): string | undefined {
+  if (!filePath) return undefined;
+  // If it's a CDN URL, return it directly (no auth needed)
+  if (isBunnyCdnUrl(filePath)) {
+    return filePath;
+  }
+  // For local files, use the API download endpoint
+  return `/api/jobs/${jobId}/download?type=${type}`;
+}
 
 export async function GET(request: NextRequest) {
   // Check authentication
@@ -24,8 +39,8 @@ export async function GET(request: NextRequest) {
       completedAt: job.completedAt?.toISOString(),
       downloads: job.files.ttsAudio || job.files.mergedAudio
         ? {
-            ttsAudio: job.files.ttsAudio ? `/api/jobs/${job.id}/download?type=tts` : undefined,
-            mergedAudio: job.files.mergedAudio ? `/api/jobs/${job.id}/download?type=merged` : undefined,
+            ttsAudio: getDownloadUrl(job.files.ttsAudio, job.id, 'tts'),
+            mergedAudio: getDownloadUrl(job.files.mergedAudio, job.id, 'merged'),
           }
         : undefined,
     }));

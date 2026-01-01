@@ -3,6 +3,7 @@ import { promises as fs } from 'fs';
 import { getJobForUser } from '@/lib/job-manager';
 import { fileExists } from '@/lib/utils';
 import { requireAuth } from '@/lib/auth-middleware';
+import { isBunnyCdnUrl } from '@/lib/bunny-storage';
 
 export async function GET(
   request: NextRequest,
@@ -63,7 +64,23 @@ export async function GET(
       filename = `merged_audio_${job.id}.mp3`;
     }
 
-    if (!filePath || !(await fileExists(filePath))) {
+    if (!filePath) {
+      console.log(`[DOWNLOAD] Error: File path not set`);
+      return NextResponse.json(
+        { error: 'File not found' },
+        { status: 404 }
+      );
+    }
+
+    // If it's a CDN URL, redirect to it
+    if (isBunnyCdnUrl(filePath)) {
+      const duration = Date.now() - startTime;
+      console.log(`[DOWNLOAD] Redirecting to CDN: ${filePath} (${duration}ms)`);
+      return NextResponse.redirect(filePath);
+    }
+
+    // Fall back to local file serving
+    if (!(await fileExists(filePath))) {
       console.log(`[DOWNLOAD] Error: File not found at ${filePath}`);
       return NextResponse.json(
         { error: 'File not found' },
