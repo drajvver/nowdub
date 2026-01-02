@@ -9,14 +9,10 @@ RUN apt-get update && apt-get install -y \
 # Set working directory
 WORKDIR /app
 
-# Accept build arguments for NEXT_PUBLIC_ environment variables
-# These are embedded at build time in Next.js
-ARG NEXT_PUBLIC_CONVEX_URL
-ARG NEXT_PUBLIC_API_URL
-
-# Set as environment variables for the build process
-ENV NEXT_PUBLIC_CONVEX_URL=${NEXT_PUBLIC_CONVEX_URL}
-ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+# Use placeholder values for NEXT_PUBLIC_ environment variables at build time
+# These will be replaced at runtime by docker-entrypoint.sh
+ENV NEXT_PUBLIC_CONVEX_URL=__NEXT_PUBLIC_CONVEX_URL_PLACEHOLDER__
+ENV NEXT_PUBLIC_API_URL=__NEXT_PUBLIC_API_URL_PLACEHOLDER__
 
 # Copy package files
 COPY package.json package-lock.json* ./
@@ -68,6 +64,10 @@ COPY --from=builder /app/lib ./lib
 COPY --from=builder /app/convex ./convex
 COPY --from=builder /app/types ./types
 
+# Copy entrypoint script for runtime environment variable injection
+COPY scripts/docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
 # Create directories for temp files and cache
 # Set ownership before switching users (including node_modules)
 RUN mkdir -p temp/jobs cache/tts && \
@@ -79,6 +79,9 @@ USER nodejs
 
 # Expose port 3000
 EXPOSE 3000
+
+# Use entrypoint script to inject runtime environment variables
+ENTRYPOINT ["/docker-entrypoint.sh"]
 
 # Start the Next.js production server
 CMD ["npm", "start"]
