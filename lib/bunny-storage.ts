@@ -21,7 +21,7 @@ function getBunnyStorageKey(): string | null {
 /**
  * Upload a file to Bunny Storage
  * @param localPath - Local file path to upload
- * @param storagePath - Path in Bunny Storage (e.g., "users/123/jobs/456/tts_audio.mp3")
+ * @param storagePath - Path in Bunny Storage (e.g., "users/123/jobs/456/tts_audio.wav")
  * @returns CDN URL of the uploaded file, or null if upload failed
  */
 export async function uploadFileToBunny(
@@ -36,11 +36,11 @@ export async function uploadFileToBunny(
   try {
     // Stream the file to avoid loading entire file into memory
     const fileStream = createReadStream(localPath);
-    
+
     // Upload to Bunny Storage
     const uploadUrl = `${BUNNY_STORAGE_URL}/${storagePath}`;
     console.log(`[BUNNY] Uploading ${localPath} to ${uploadUrl}`);
-    
+
     const response = await fetch(uploadUrl, {
       method: 'PUT',
       headers: {
@@ -48,7 +48,8 @@ export async function uploadFileToBunny(
         'Content-Type': 'application/octet-stream',
       },
       body: fileStream as any, // Stream directly instead of loading into memory
-    });
+      duplex: 'half', // Required for Node.js fetch when sending a body
+    } as RequestInit & { duplex: 'half' });
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -85,11 +86,11 @@ export async function uploadJobFilesToBunny(
 }> {
   // Create storage paths scoped by user and job
   const basePath = `users/${userId}/jobs/${jobId}`;
-  
+
   // Upload both files in parallel
   const [ttsAudioUrl, mergedAudioUrl] = await Promise.all([
-    uploadFileToBunny(ttsAudioPath, `${basePath}/tts_audio.mp3`),
-    uploadFileToBunny(mergedAudioPath, `${basePath}/merged_audio.mp3`),
+    uploadFileToBunny(ttsAudioPath, `${basePath}/tts_audio.wav`),
+    uploadFileToBunny(mergedAudioPath, `${basePath}/merged_audio.flac`),
   ]);
 
   return { ttsAudioUrl, mergedAudioUrl };

@@ -13,6 +13,7 @@
   "dependencies": {
     "@convex-dev/auth": "^0.0.90",
     "@google-cloud/text-to-speech": "^5.5.0",
+    "@influxdata/influxdb-client": "^1.35.0",
     "convex": "^1.31.2",
     "fluent-ffmpeg": "^2.1.2",
     "next": "16.1.1",

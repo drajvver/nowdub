@@ -27,11 +27,33 @@ export async function GET(request: NextRequest) {
   const { user } = authResult;
 
   try {
-    // Get only jobs belonging to this user
-    const jobs = await getJobsByUser(user.id);
+    // Get auth token from request (check Authorization header first, then cookies)
+    let token: string | null = null;
+    const authHeader = request.headers.get('authorization');
+    if (authHeader?.startsWith('Bearer ')) {
+      token = authHeader.slice(7);
+    } else {
+      // Fallback: check cookies for Convex JWT
+      const allCookies = request.cookies.getAll();
+      for (const cookie of allCookies) {
+        if (cookie.name.toLowerCase().includes('convex') && cookie.name.toLowerCase().includes('jwt')) {
+          token = cookie.value;
+          break;
+        }
+      }
+      // Also try the specific cookie name
+      if (!token) {
+        token = request.cookies.get('__convexAuthJWT')?.value ?? null;
+      }
+    }
+
+    // Get only jobs belonging to this user - pass token to use authenticated client
+    // This ensures we use the correct user ID from the auth token
+    const jobs = await getJobsByUser(undefined, token || undefined);
     
     const jobResponses: JobStatusResponse[] = jobs.map((job) => ({
       id: job.id,
+      name: job.name,
       status: job.status,
       progress: job.progress,
       error: job.error,

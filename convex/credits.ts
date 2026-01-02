@@ -15,9 +15,9 @@ export const initializeUserCredits = mutation({
   },
   handler: async (ctx, args) => {
     // Get userId from auth context or from parameter (for server-side calls)
-    let userId = args.userId;
+    let userId: string | undefined = args.userId;
     if (!userId) {
-      userId = await getAuthUserId(ctx);
+      userId = (await getAuthUserId(ctx)) ?? undefined;
     }
     if (!userId) {
       throw new Error("Unauthorized");
@@ -64,9 +64,9 @@ export const getUserCredits = query({
   },
   handler: async (ctx, args) => {
     // Get userId from auth context or from parameter (for server-side calls)
-    let userId = args.userId;
+    let userId: string | undefined = args.userId;
     if (!userId) {
-      userId = await getAuthUserId(ctx);
+      userId = (await getAuthUserId(ctx)) ?? undefined;
     }
     if (!userId) {
       throw new Error("Unauthorized");
@@ -91,9 +91,9 @@ export const hasEnoughCredits = query({
   },
   handler: async (ctx, args) => {
     // Get userId from auth context or from parameter (for server-side calls)
-    let userId = args.userId;
+    let userId: string | undefined = args.userId;
     if (!userId) {
-      userId = await getAuthUserId(ctx);
+      userId = (await getAuthUserId(ctx)) ?? undefined;
     }
     if (!userId) {
       throw new Error("Unauthorized");
@@ -129,9 +129,9 @@ export const reserveCredits = mutation({
   },
   handler: async (ctx, args) => {
     // Get userId from auth context or from parameter (for server-side calls)
-    let userId = args.userId;
+    let userId: string | undefined = args.userId;
     if (!userId) {
-      userId = await getAuthUserId(ctx);
+      userId = (await getAuthUserId(ctx)) ?? undefined;
     }
     if (!userId) {
       throw new Error("Unauthorized");
@@ -194,9 +194,9 @@ export const finalizeCredits = mutation({
   },
   handler: async (ctx, args) => {
     // Get userId from auth context or from parameter (for server-side calls)
-    let userId = args.userId;
+    let userId: string | undefined = args.userId;
     if (!userId) {
-      userId = await getAuthUserId(ctx);
+      userId = (await getAuthUserId(ctx)) ?? undefined;
     }
     if (!userId) {
       throw new Error("Unauthorized");
@@ -290,9 +290,9 @@ export const deductCredits = mutation({
   },
   handler: async (ctx, args) => {
     // Get userId from auth context or from parameter (for server-side calls)
-    let userId = args.userId;
+    let userId: string | undefined = args.userId;
     if (!userId) {
-      userId = await getAuthUserId(ctx);
+      userId = (await getAuthUserId(ctx)) ?? undefined;
     }
     if (!userId) {
       throw new Error("Unauthorized");
@@ -344,9 +344,9 @@ export const getTransactionHistory = query({
   },
   handler: async (ctx, args) => {
     // Get userId from auth context or from parameter (for server-side calls)
-    let userId = args.userId;
+    let userId: string | undefined = args.userId;
     if (!userId) {
-      userId = await getAuthUserId(ctx);
+      userId = (await getAuthUserId(ctx)) ?? undefined;
     }
     if (!userId) {
       throw new Error("Unauthorized");
@@ -421,9 +421,9 @@ export const getUserCreditsWithHistory = query({
   },
   handler: async (ctx, args) => {
     // Get userId from auth context or from parameter (for server-side calls)
-    let userId = args.userId;
+    let userId: string | undefined = args.userId;
     if (!userId) {
-      userId = await getAuthUserId(ctx);
+      userId = (await getAuthUserId(ctx)) ?? undefined;
     }
     if (!userId) {
       throw new Error("Unauthorized");

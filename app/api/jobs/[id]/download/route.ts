@@ -35,8 +35,29 @@ export async function GET(
       );
     }
 
-    // Get job with ownership verification
-    const job = await getJobForUser(id, user.id);
+    // Get auth token from request (check Authorization header first, then cookies)
+    let token: string | null = null;
+    const authHeader = request.headers.get('authorization');
+    if (authHeader?.startsWith('Bearer ')) {
+      token = authHeader.slice(7);
+    } else {
+      // Fallback: check cookies for Convex JWT
+      const allCookies = request.cookies.getAll();
+      for (const cookie of allCookies) {
+        if (cookie.name.toLowerCase().includes('convex') && cookie.name.toLowerCase().includes('jwt')) {
+          token = cookie.value;
+          break;
+        }
+      }
+      // Also try the specific cookie name
+      if (!token) {
+        token = request.cookies.get('__convexAuthJWT')?.value ?? null;
+      }
+    }
+
+    // Get job with ownership verification - pass token to use authenticated client
+    // This ensures we use the correct user ID from the auth token
+    const job = await getJobForUser(id, undefined, token || undefined);
 
     if (!job) {
       console.log(`[DOWNLOAD] Error: Job not found or not owned by user`);
@@ -59,10 +80,10 @@ export async function GET(
 
     if (type === 'tts') {
       filePath = job.files.ttsAudio;
-      filename = `tts_audio_${job.id}.mp3`;
+      filename = `tts_audio_${job.id}.wav`;
     } else {
       filePath = job.files.mergedAudio;
-      filename = `merged_audio_${job.id}.mp3`;
+      filename = `merged_audio_${job.id}.flac`;
     }
 
     if (!filePath) {
@@ -100,9 +121,17 @@ export async function GET(
     // Return streaming response
     const duration = Date.now() - startTime;
     console.log(`[DOWNLOAD] Streaming ${fileSize} bytes in ${duration}ms`);
+    // Determine content type based on file extension
+    let contentType = 'audio/mpeg';
+    if (filename.endsWith('.flac')) {
+      contentType = 'audio/flac';
+    } else if (filename.endsWith('.wav')) {
+      contentType = 'audio/wav';
+    }
+    
     return new NextResponse(fileStream as any, {
       headers: {
-        'Content-Type': 'audio/mpeg',
+        'Content-Type': contentType,
         'Content-Disposition': `attachment; filename="${filename}"`,
         'Content-Length': fileSize.toString(),
       },

@@ -20,6 +20,7 @@ export interface TTSOptions {
 export interface DubbingJob {
   id: string; // Convex ID
   userId: string;
+  name?: string; // optional job name
   status: 'pending' | 'processing' | 'completed' | 'failed';
   progress?: number;
   error?: string;
@@ -40,6 +41,7 @@ export interface UploadResponse {
 
 export interface JobStatusResponse {
   id: string;
+  name?: string; // optional job name
   status: 'pending' | 'processing' | 'completed' | 'failed';
   progress?: number;
   error?: string;

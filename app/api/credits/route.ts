@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth-middleware';
-import { getConvexClient, api } from '@/lib/convex-server-client';
-
-const convex = getConvexClient();
+import { getConvexClientWithAuth, api } from '@/lib/convex-server-client';
 
 export interface CreditResponse {
   balance: number | null;
@@ -32,10 +30,37 @@ export async function GET(request: NextRequest) {
   const { user } = authResult;
 
   try {
-    // Get credits with history from Convex
-    const creditsData = await convex.query(api.credits.getUserCreditsWithHistory, { 
-      userId: user.id,
-    });
+    // Get auth token from request (check Authorization header first, then cookies)
+    let token: string | null = null;
+    const authHeader = request.headers.get('authorization');
+    if (authHeader?.startsWith('Bearer ')) {
+      token = authHeader.slice(7);
+    } else {
+      // Fallback: check cookies for Convex JWT
+      const allCookies = request.cookies.getAll();
+      for (const cookie of allCookies) {
+        if (cookie.name.toLowerCase().includes('convex') && cookie.name.toLowerCase().includes('jwt')) {
+          token = cookie.value;
+          break;
+        }
+      }
+      // Also try the specific cookie name
+      if (!token) {
+        token = request.cookies.get('__convexAuthJWT')?.value ?? null;
+      }
+    }
+    
+    if (!token) {
+      return NextResponse.json(
+        { error: 'Authentication token required' },
+        { status: 401 }
+      );
+    }
+
+    // Use authenticated Convex client - don't pass userId, let Convex get it from auth context
+    // This ensures we use the correct user ID from the auth token, preventing duplicate credit records
+    const convex = getConvexClientWithAuth(token);
+    const creditsData = await convex.query(api.credits.getUserCreditsWithHistory, {});
 
     const response: CreditResponse = {
       balance: creditsData.balance,
@@ -75,10 +100,38 @@ export async function POST(request: NextRequest) {
   const { user } = authResult;
 
   try {
+    // Get auth token from request (check Authorization header first, then cookies)
+    let token: string | null = null;
+    const authHeader = request.headers.get('authorization');
+    if (authHeader?.startsWith('Bearer ')) {
+      token = authHeader.slice(7);
+    } else {
+      // Fallback: check cookies for Convex JWT
+      const allCookies = request.cookies.getAll();
+      for (const cookie of allCookies) {
+        if (cookie.name.toLowerCase().includes('convex') && cookie.name.toLowerCase().includes('jwt')) {
+          token = cookie.value;
+          break;
+        }
+      }
+      // Also try the specific cookie name
+      if (!token) {
+        token = request.cookies.get('__convexAuthJWT')?.value ?? null;
+      }
+    }
+    
+    if (!token) {
+      return NextResponse.json(
+        { error: 'Authentication token required' },
+        { status: 401 }
+      );
+    }
+
+    // Use authenticated Convex client - don't pass userId, let Convex get it from auth context
+    // This ensures we use the correct user ID from the auth token, preventing duplicate credit records
+    const convex = getConvexClientWithAuth(token);
     // Initialize credits (will return existing balance if already initialized)
-    const balance = await convex.mutation(api.credits.initializeUserCredits, { 
-      userId: user.id,
-    });
+    const balance = await convex.mutation(api.credits.initializeUserCredits, {});
 
     return NextResponse.json({ balance, initialized: true });
   } catch (error) {

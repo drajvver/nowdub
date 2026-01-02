@@ -3,6 +3,7 @@
 import { useConvexAuth } from 'convex/react';
 import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
+import { ThemeToggle } from '@/components/theme-toggle';
 
 export default function AuthLayout({
   children,
@@ -20,9 +21,9 @@ export default function AuthLayout({
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
+      <div className="min-h-screen bg-white dark:bg-black flex items-center justify-center">
         <div className="animate-pulse">
-          <div className="w-12 h-12 rounded-full border-4 border-amber-400 border-t-transparent animate-spin" />
+          <div className="w-12 h-12 rounded-full border-4 border-[#008bd2] border-t-transparent animate-spin" />
         </div>
       </div>
     );
@@ -33,11 +34,12 @@ export default function AuthLayout({
   }
 
   return (
-    <div className="min-h-screen bg-zinc-950 flex flex-col">
-      <nav className="p-6">
-        <a href="/" className="text-amber-400 font-bold text-xl tracking-tight hover:text-amber-300 transition-colors">
-          Auto Lektor
+    <div className="min-h-screen bg-white dark:bg-black flex flex-col">
+      <nav className="p-6 flex items-center justify-between">
+        <a href="/" className="text-[#008bd2] font-bold text-xl tracking-tight hover:text-[#00a8e6] transition-colors">
+          NowDub
         </a>
+        <ThemeToggle />
       </nav>
       <main className="flex-1 flex items-center justify-center px-4">
         {children}

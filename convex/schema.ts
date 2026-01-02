@@ -10,6 +10,7 @@ export default defineSchema({
   // Jobs table for dubbing jobs
   jobs: defineTable({
     userId: v.string(),
+    name: v.optional(v.string()), // optional job name (inferred from audio filename if not provided)
     status: v.union(
       v.literal("pending"),
       v.literal("processing"),

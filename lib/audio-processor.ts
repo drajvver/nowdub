@@ -17,7 +17,7 @@ export async function insertSilence(
   const startTime = Date.now();
   
   return new Promise((resolve, reject) => {
-    // Generate raw silence bytes and encode to MP3
+    // Generate raw silence bytes and encode to WAV
     // This method is more universally supported than lavfi
     const sampleRate = 44100;
     const channels = 2;
@@ -27,7 +27,7 @@ export async function insertSilence(
     
     // Create a buffer of zeros (silence)
     const silenceBuffer = Buffer.alloc(bufferSize, 0);
-    const tempRawFile = outputPath.replace('.mp3', '.raw');
+    const tempRawFile = outputPath.replace('.wav', '.raw');
     
     // Write raw audio file
     fs.writeFile(tempRawFile, silenceBuffer)
@@ -41,10 +41,9 @@ export async function insertSilence(
             '-ar', sampleRate.toString(),
             '-ac', channels.toString()
           ])
-          .audioCodec('libmp3lame')
+          .audioCodec('pcm_s16le')
           .audioFrequency(sampleRate)
           .audioChannels(channels)
-          .audioBitrate('192k')
           .on('error', (err: any) => {
             console.error(`[AUDIO] FFmpeg error encoding silence:`, err);
             // Clean up temp file
@@ -87,14 +86,14 @@ export async function concatenateAudioFiles(
     fs.writeFile(listFile, listContent)
       .then(() => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ffmpeg()
+        ffmpegAny()
           .input(listFile)
           .inputOptions(['-f', 'concat', '-safe', '0'])
-          .audioCodec('libmp3lame')
+          .audioCodec('pcm_s16le')
           .audioFrequency(44100)
           .audioChannels(2)
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          .on('error', (err) => {
+          .on('error', (err: any) => {
             console.error(`[AUDIO] FFmpeg error concatenating:`, err);
             reject(new Error(`FFmpeg error: ${err.message}`));
           })
@@ -169,9 +168,8 @@ export async function applySidechainCompression(
       // 3. Add a limiter to prevent any residual clipping on the final output
       `[mixed]alimiter=limit=0.95:attack=5:release=50:asc=1`
     ])
-      .audioCodec('libmp3lame')
-      .audioBitrate('320k')
-      .audioFrequency(44100)
+      .audioCodec('flac')
+      .audioFrequency(48000)
       .audioChannels(2)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .on('error', (err: any) => {
@@ -185,6 +183,8 @@ export async function applySidechainCompression(
         resolve();
       })
       .save(outputPath);
+
+      console.log("[FFMPEG AUDIO] Command: " + command.toString());
   });
 }
 
@@ -206,21 +206,20 @@ export async function getAudioDuration(filePath: string): Promise<number> {
 }
 
 /**
- * Convert audio file to MP3 format
+ * Convert audio file to WAV format
  */
-export async function convertToMP3(
+export async function convertAudioToWav(
   inputPath: string,
   outputPath: string
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ffmpeg(inputPath)
-      .audioCodec('libmp3lame')
+    ffmpegAny(inputPath)
+      .audioCodec('pcm_s16le')
       .audioFrequency(44100)
       .audioChannels(2)
-      .audioBitrate('192k')
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .on('error', (err) => {
+      .on('error', (err: any) => {
         reject(new Error(`FFmpeg error: ${err.message}`));
       })
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -241,13 +240,13 @@ export async function normalizeAudio(
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ffmpeg(inputPath)
+    ffmpegAny(inputPath)
       .audioFilter(`loudnorm=I=${targetLevel}:TP=-1.5:LRA=11`)
       .audioCodec('libmp3lame')
       .audioFrequency(44100)
       .audioChannels(2)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .on('error', (err) => {
+      .on('error', (err: any) => {
         reject(new Error(`FFmpeg error: ${err.message}`));
       })
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -310,14 +309,13 @@ export async function adjustAudioSpeed(
     const filterChain = filters.join(',');
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ffmpeg(inputPath)
+    ffmpegAny(inputPath)
       .audioFilter(filterChain)
-      .audioCodec('libmp3lame')
+      .audioCodec('pcm_s16le')
       .audioFrequency(44100)
       .audioChannels(2)
-      .audioBitrate('192k')
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .on('error', (err) => {
+      .on('error', (err: any) => {
         console.error(`[AUDIO] FFmpeg error adjusting speed:`, err);
         reject(new Error(`FFmpeg error: ${err.message}`));
       })
@@ -332,11 +330,53 @@ export async function adjustAudioSpeed(
 }
 
 /**
+ * Trim trailing silence from an audio file
+ * Uses silenceremove filter to detect and remove silence at the end
+ */
+export async function trimTrailingSilence(
+  inputPath: string,
+  outputPath: string,
+  options?: {
+    silenceThreshold?: number; // dB threshold for silence detection (default: -50)
+    minSilenceDuration?: number; // Minimum silence duration to detect (default: 0.1s)
+  }
+): Promise<void> {
+  const threshold = options?.silenceThreshold ?? -50;
+  const minDuration = options?.minSilenceDuration ?? 0.1;
+  
+  console.log(`[AUDIO] Trimming trailing silence from ${inputPath}`);
+  const startTime = Date.now();
+
+  return new Promise((resolve, reject) => {
+    // silenceremove filter: 
+    // stop_periods=1 - detect one silence period at the end
+    // stop_duration - minimum silence duration to detect
+    // stop_threshold - amplitude threshold for silence (dB)
+    // detection=peak - use peak detection
+    ffmpegAny(inputPath)
+      .audioFilter(`silenceremove=stop_periods=1:stop_duration=${minDuration}:stop_threshold=${threshold}dB:detection=peak`)
+      .audioCodec('pcm_s16le')
+      .audioFrequency(44100)
+      .audioChannels(2)
+      .on('error', (err: any) => {
+        console.error(`[AUDIO] FFmpeg error trimming silence:`, err);
+        reject(new Error(`FFmpeg error: ${err.message}`));
+      })
+      .on('end', () => {
+        const duration = Date.now() - startTime;
+        console.log(`[AUDIO] Trimmed trailing silence in ${duration}ms`);
+        resolve();
+      })
+      .save(outputPath);
+  });
+}
+
+/**
  * Check if FFmpeg is available
  */
 export async function checkFFmpegAvailable(): Promise<boolean> {
   return new Promise((resolve) => {
-    ffmpeg.getAvailableFormats((err, formats) => {
+    ffmpegAny.getAvailableFormats((err: any, formats: any) => {
       resolve(!err && !!formats);
     });
   });

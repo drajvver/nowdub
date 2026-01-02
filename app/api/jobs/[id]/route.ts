@@ -30,8 +30,29 @@ export async function GET(
   const { user } = authResult;
 
   try {
+    // Get auth token from request (check Authorization header first, then cookies)
+    let token: string | null = null;
+    const authHeader = request.headers.get('authorization');
+    if (authHeader?.startsWith('Bearer ')) {
+      token = authHeader.slice(7);
+    } else {
+      // Fallback: check cookies for Convex JWT
+      const allCookies = request.cookies.getAll();
+      for (const cookie of allCookies) {
+        if (cookie.name.toLowerCase().includes('convex') && cookie.name.toLowerCase().includes('jwt')) {
+          token = cookie.value;
+          break;
+        }
+      }
+      // Also try the specific cookie name
+      if (!token) {
+        token = request.cookies.get('__convexAuthJWT')?.value ?? null;
+      }
+    }
+
     const { id } = await params;
-    const job = await getJobForUser(id, user.id);
+    // Pass token to use authenticated client - this ensures we use the correct user ID from the auth token
+    const job = await getJobForUser(id, undefined, token || undefined);
 
     if (!job) {
       return NextResponse.json(
@@ -77,8 +98,29 @@ export async function DELETE(
   const { user } = authResult;
 
   try {
+    // Get auth token from request (check Authorization header first, then cookies)
+    let token: string | null = null;
+    const authHeader = request.headers.get('authorization');
+    if (authHeader?.startsWith('Bearer ')) {
+      token = authHeader.slice(7);
+    } else {
+      // Fallback: check cookies for Convex JWT
+      const allCookies = request.cookies.getAll();
+      for (const cookie of allCookies) {
+        if (cookie.name.toLowerCase().includes('convex') && cookie.name.toLowerCase().includes('jwt')) {
+          token = cookie.value;
+          break;
+        }
+      }
+      // Also try the specific cookie name
+      if (!token) {
+        token = request.cookies.get('__convexAuthJWT')?.value ?? null;
+      }
+    }
+
     const { id } = await params;
-    const deleted = await deleteJobForUser(id, user.id);
+    // Pass token to use authenticated client - this ensures we use the correct user ID from the auth token
+    const deleted = await deleteJobForUser(id, undefined, token || undefined);
     
     if (!deleted) {
       return NextResponse.json(

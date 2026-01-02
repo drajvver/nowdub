@@ -2,13 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { promises as fs } from 'fs';
 import { createWriteStream } from 'fs';
 import { pipeline } from 'stream/promises';
+import { Readable } from 'stream';
 import path from 'path';
 import { createJobTempDir, isSubtitleFile, isAudioFile, validateFileSize, generateUniqueFilename } from '@/lib/utils';
 import { createJob } from '@/lib/job-manager';
 import { requireAuth } from '@/lib/auth-middleware';
 
-// Maximum file size: 100MB
-const MAX_FILE_SIZE = 100 * 1024 * 1024;
+// Maximum file size: 1GB
+const MAX_FILE_SIZE = 1 * 1024 * 1024 * 1024;
 
 export async function POST(request: NextRequest) {
   console.log('[UPLOAD] Received upload request');
@@ -28,9 +29,11 @@ export async function POST(request: NextRequest) {
     
     const subtitleFile = formData.get('subtitle') as File;
     const audioFile = formData.get('audio') as File;
+    const customName = formData.get('name') as string | null;
 
     console.log(`[UPLOAD] Subtitle file: ${subtitleFile?.name} (${subtitleFile?.size} bytes)`);
     console.log(`[UPLOAD] Audio file: ${audioFile?.name} (${audioFile?.size} bytes)`);
+    console.log(`[UPLOAD] Custom name: ${customName || '(auto-infer from audio filename)'}`);
 
     // Validate files exist
     if (!subtitleFile) {
@@ -91,7 +94,19 @@ export async function POST(request: NextRequest) {
     // Save subtitle file (streaming to avoid loading entire file into memory)
     const subtitleFilename = generateUniqueFilename(subtitleFile.name);
     const subtitlePath = path.join(tempDir, subtitleFilename);
-    const subtitleStream = subtitleFile.stream();
+    const subtitleWebStream = subtitleFile.stream();
+    const subtitleStream = Readable.from(async function* () {
+      const reader = subtitleWebStream.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          yield value;
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    }());
     const subtitleWriteStream = createWriteStream(subtitlePath);
     await pipeline(subtitleStream, subtitleWriteStream);
     console.log(`[UPLOAD] Saved subtitle: ${subtitlePath}`);
@@ -99,13 +114,50 @@ export async function POST(request: NextRequest) {
     // Save audio file (streaming to avoid loading entire file into memory)
     const audioFilename = generateUniqueFilename(audioFile.name);
     const audioPath = path.join(tempDir, audioFilename);
-    const audioStream = audioFile.stream();
+    const audioWebStream = audioFile.stream();
+    const audioStream = Readable.from(async function* () {
+      const reader = audioWebStream.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          yield value;
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    }());
     const audioWriteStream = createWriteStream(audioPath);
     await pipeline(audioStream, audioWriteStream);
     console.log(`[UPLOAD] Saved audio: ${audioPath}`);
 
-    // Create job with user ID
-    const job = await createJob(subtitlePath, audioPath, user.id);
+    // Get auth token from request (check Authorization header first, then cookies)
+    let token: string | null = null;
+    const authHeader = request.headers.get('authorization');
+    if (authHeader?.startsWith('Bearer ')) {
+      token = authHeader.slice(7);
+    } else {
+      // Fallback: check cookies for Convex JWT
+      const allCookies = request.cookies.getAll();
+      for (const cookie of allCookies) {
+        if (cookie.name.toLowerCase().includes('convex') && cookie.name.toLowerCase().includes('jwt')) {
+          token = cookie.value;
+          break;
+        }
+      }
+      // Also try the specific cookie name
+      if (!token) {
+        token = request.cookies.get('__convexAuthJWT')?.value ?? null;
+      }
+    }
+
+    // Determine job name: use custom name if provided, otherwise infer from audio filename
+    const jobName = customName?.trim() || audioFile.name.replace(/\.[^/.]+$/, "");
+    console.log(`[UPLOAD] Job name: ${jobName}`);
+
+    // Create job - pass token to use authenticated client and get userId from auth context
+    // This ensures we use the correct user ID from the auth token, preventing duplicate job records
+    const job = await createJob(subtitlePath, audioPath, undefined, token || undefined, jobName);
 
     const duration = Date.now() - startTime;
     console.log(`[UPLOAD] Upload completed in ${duration}ms, job ID: ${job.id}`);

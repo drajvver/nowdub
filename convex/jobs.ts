@@ -8,6 +8,7 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 export const createJob = mutation({
   args: {
     userId: v.optional(v.string()),
+    name: v.optional(v.string()),
     files: v.object({
       subtitle: v.string(),
       originalAudio: v.string(),
@@ -17,9 +18,9 @@ export const createJob = mutation({
   },
   handler: async (ctx, args) => {
     // Get userId from auth context or from parameter (for server-side calls)
-    let userId = args.userId;
+    let userId: string | undefined = args.userId;
     if (!userId) {
-      userId = await getAuthUserId(ctx);
+      userId = (await getAuthUserId(ctx)) ?? undefined;
     }
     if (!userId) {
       throw new Error("Unauthorized");
@@ -27,6 +28,7 @@ export const createJob = mutation({
 
     const jobId = await ctx.db.insert("jobs", {
       userId,
+      name: args.name,
       status: "pending",
       files: args.files,
       createdAt: Date.now(),
@@ -52,9 +54,9 @@ export const getJob = query({
     }
 
     // Get userId from auth context or from parameter (for server-side calls)
-    let userId = args.userId;
+    let userId: string | undefined = args.userId;
     if (!userId) {
-      userId = await getAuthUserId(ctx);
+      userId = (await getAuthUserId(ctx)) ?? undefined;
     }
     
     // Require userId for security
@@ -94,9 +96,9 @@ export const getUserJobs = query({
   },
   handler: async (ctx, args) => {
     // Get userId from auth context or from parameter (for server-side calls)
-    let userId = args.userId;
+    let userId: string | undefined = args.userId;
     if (!userId) {
-      userId = await getAuthUserId(ctx);
+      userId = (await getAuthUserId(ctx)) ?? undefined;
     }
     if (!userId) {
       throw new Error("Unauthorized");
@@ -203,9 +205,9 @@ export const deleteJob = mutation({
   },
   handler: async (ctx, args) => {
     // Get userId from auth context or from parameter (for server-side calls)
-    let userId = args.userId;
+    let userId: string | undefined = args.userId;
     if (!userId) {
-      userId = await getAuthUserId(ctx);
+      userId = (await getAuthUserId(ctx)) ?? undefined;
     }
     if (!userId) {
       throw new Error("Unauthorized");

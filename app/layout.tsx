@@ -1,20 +1,17 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Roboto } from "next/font/google";
 import "./globals.css";
 import { ConvexClientProvider } from "@/lib/convex-provider";
+import { ThemeProvider } from "@/lib/theme-provider";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const roboto = Roboto({
+  weight: ["300", "400", "500", "700"],
   subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
+  variable: "--font-roboto",
 });
 
 export const metadata: Metadata = {
-  title: "Auto Lektor - AI Dubbing Generator",
+  title: "NowDub - AI Dubbing Generator",
   description: "Generate TTS audio from subtitles and merge with your original audio track",
 };
 
@@ -24,13 +21,38 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function() {
+                try {
+                  const theme = localStorage.getItem('theme');
+                  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+                  const isDark = theme === 'dark' || (!theme && prefersDark);
+                  const root = document.documentElement;
+                  if (isDark) {
+                    root.classList.add('dark');
+                    root.classList.remove('light');
+                  } else {
+                    root.classList.remove('dark');
+                    root.classList.add('light');
+                  }
+                } catch (e) {}
+              })();
+            `,
+          }}
+        />
+      </head>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        className={`${roboto.variable} antialiased`}
       >
-        <ConvexClientProvider>
-          {children}
-        </ConvexClientProvider>
+        <ThemeProvider>
+          <ConvexClientProvider>
+            {children}
+          </ConvexClientProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

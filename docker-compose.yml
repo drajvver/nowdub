@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Pass NEXT_PUBLIC_ variables as build arguments (required at build time)
+        - NEXT_PUBLIC_CONVEX_URL=${NEXT_PUBLIC_CONVEX_URL}
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      # Runtime environment variables (not NEXT_PUBLIC_ as those are build-time)
+      # - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}
+      - BUNNY_STORAGE_KEY=${BUNNY_STORAGE_KEY}
+      - INFLUX_URL=${INFLUX_URL}
+      - INFLUX_TOKEN=${INFLUX_TOKEN}
+      - INFLUX_ORG=${INFLUX_ORG}
+      - INFLUX_BUCKET=${INFLUX_BUCKET}
+      - STATS_API_KEY=${STATS_API_KEY}
+      - GOOGLE_CLOUD_PROJECT_ID=${GOOGLE_CLOUD_PROJECT_ID}
+      - GOOGLE_CLOUD_KEY_JSON=${GOOGLE_CLOUD_KEY_JSON}
+    volumes:
+      # Mount temp directory for job processing
+      - ./temp:/app/temp
+      # Mount cache directory for TTS cache
+      - ./cache:/app/cache
+      # Mount Google Cloud credentials if using file path
+      # - ./path/to/credentials.json:/app/credentials.json:ro
+    restart: unless-stopped
+

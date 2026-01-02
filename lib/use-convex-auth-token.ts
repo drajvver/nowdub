@@ -16,11 +16,7 @@ export function useConvexAuthToken() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    if (isAuthenticated) {
-      console.log('[AUTH TOKEN] Attempting to retrieve token...');
-      console.log('[AUTH TOKEN] All cookies:', document.cookie);
-      console.log('[AUTH TOKEN] LocalStorage keys:', Object.keys(localStorage));
-      
+    if (isAuthenticated) {      
       // The token is stored in a cookie by Convex
       // We need to extract it from the document.cookie
       const cookies = document.cookie.split(';');
@@ -30,7 +26,6 @@ export function useConvexAuthToken() {
       for (const cookie of cookies) {
         const [name, value] = cookie.trim().split('=');
         if (name.includes('convex') && name.toLowerCase().includes('jwt')) {
-          console.log('[AUTH TOKEN] Found JWT in cookie:', name);
           setToken(decodeURIComponent(value));
           return;
         }
@@ -41,23 +36,19 @@ export function useConvexAuthToken() {
         const storageKeys = Object.keys(localStorage);
         for (const key of storageKeys) {
           if (key.includes('convex') && key.toLowerCase().includes('auth')) {
-            console.log('[AUTH TOKEN] Found auth in localStorage:', key);
             const data = localStorage.getItem(key);
             if (data) {
               try {
                 // Try parsing as JSON first
                 const parsed = JSON.parse(data);
-                console.log('[AUTH TOKEN] Parsed data keys:', Object.keys(parsed));
                 if (parsed.token) {
                   setToken(parsed.token);
                   return;
                 }
               } catch {
                 // If JSON parsing fails, the value might be a raw JWT token string
-                console.log('[AUTH TOKEN] Data is not JSON, treating as raw token');
                 // Check if it looks like a JWT (3 parts separated by dots)
                 if (data.includes('.') && data.split('.').length === 3) {
-                  console.log('[AUTH TOKEN] Found raw JWT token in localStorage');
                   setToken(data);
                   return;
                 }
@@ -66,10 +57,9 @@ export function useConvexAuthToken() {
           }
         }
       } catch (e) {
-        console.error('Failed to get convex auth token:', e);
+        console.error('Error getting convex auth token:', e);
       }
       
-      console.log('[AUTH TOKEN] No token found');
       setToken(null);
     } else {
       setToken(null);

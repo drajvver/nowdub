@@ -1,8 +1,9 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { DubbingJob } from './types';
-import { getConvexClient, api } from './convex-server-client';
+import { getConvexClient, getConvexClientWithAuth, api } from './convex-server-client';
 import { Id } from '../convex/_generated/dataModel';
+import { cleanupTempDir } from './utils';
 
 // Maximum concurrent jobs
 const MAX_CONCURRENT_JOBS = 3;
@@ -144,6 +145,7 @@ function convertConvexJobToDubbingJob(job: any, jobId: Id<"jobs">): DubbingJob {
   return {
     id: jobId,
     userId: job.userId,
+    name: job.name,
     status: job.status,
     progress: job.progress,
     error: job.error,
@@ -155,32 +157,53 @@ function convertConvexJobToDubbingJob(job: any, jobId: Id<"jobs">): DubbingJob {
 
 /**
  * Create a new dubbing job
+ * @param subtitlePath Path to subtitle file
+ * @param originalAudioPath Path to original audio file
+ * @param userId User ID (deprecated - use token instead)
+ * @param token Optional auth token - if provided, uses authenticated client to get userId from auth context
+ * @param name Optional job name
  */
-export async function createJob(subtitlePath: string, originalAudioPath: string, userId: string): Promise<DubbingJob> {
-  const jobId = await convex.mutation(api.jobs.createJob, {
-    userId,
+export async function createJob(
+  subtitlePath: string, 
+  originalAudioPath: string, 
+  userId?: string,
+  token?: string,
+  name?: string
+): Promise<DubbingJob> {
+  // Use authenticated client if token is provided, otherwise use global client
+  const client = token ? getConvexClientWithAuth(token) : convex;
+  
+  const jobId = await client.mutation(api.jobs.createJob, {
+    userId: token ? undefined : userId, // Don't pass userId if using token (let Convex get it from auth)
+    name,
     files: {
       subtitle: subtitlePath,
       originalAudio: originalAudioPath,
     },
   });
 
-  console.log(`[JOB] Created new job ${jobId} for user ${userId}`);
-  console.log(`[JOB] Subtitle: ${subtitlePath}`);
-  console.log(`[JOB] Audio: ${originalAudioPath}`);
-  console.log(`[JOB] Queue size: ${jobQueue.length}, Processing: ${processingCount}/${MAX_CONCURRENT_JOBS}`);
-
   // Add to queue and try to process
   jobQueue.push(jobId);
   processNextJob();
 
   // Fetch and return the created job
-  const job = await convex.query(api.jobs.getJob, { jobId, userId });
-  if (!job) {
+  // If using token, don't pass userId (let Convex get it from auth context)
+  // Otherwise, pass userId for backward compatibility with internal processing
+  const createdJob = await client.query(api.jobs.getJob, { 
+    jobId, 
+    userId: token ? undefined : userId 
+  });
+  if (!createdJob) {
     throw new Error('Failed to create job');
   }
 
-  return convertConvexJobToDubbingJob(job, jobId);
+  const actualUserId = createdJob.userId || userId || 'unknown';
+  console.log(`[JOB] Created new job ${jobId} for user ${actualUserId}${name ? ` (${name})` : ''}`);
+  console.log(`[JOB] Subtitle: ${subtitlePath}`);
+  console.log(`[JOB] Audio: ${originalAudioPath}`);
+  console.log(`[JOB] Queue size: ${jobQueue.length}, Processing: ${processingCount}/${MAX_CONCURRENT_JOBS}`);
+
+  return convertConvexJobToDubbingJob(createdJob, jobId);
 }
 
 /**
@@ -203,19 +226,29 @@ export async function getJob(jobId: string): Promise<DubbingJob | undefined> {
 
 /**
  * Get a job by ID and verify ownership
+ * @param jobId Job ID
+ * @param userId User ID (deprecated - use token instead)
+ * @param token Optional auth token - if provided, uses authenticated client to get userId from auth context
  */
-export async function getJobForUser(jobId: string, userId: string): Promise<DubbingJob | undefined> {
+export async function getJobForUser(
+  jobId: string, 
+  userId?: string,
+  token?: string
+): Promise<DubbingJob | undefined> {
   try {
-    const job = await convex.query(api.jobs.getJob, { 
+    // Use authenticated client if token is provided, otherwise use global client
+    const client = token ? getConvexClientWithAuth(token) : convex;
+    
+    const job = await client.query(api.jobs.getJob, { 
       jobId: jobId as Id<"jobs">,
-      userId,
+      userId: token ? undefined : userId, // Don't pass userId if using token (let Convex get it from auth)
     });
     if (!job) {
       return undefined;
     }
     return convertConvexJobToDubbingJob(job, jobId as Id<"jobs">);
   } catch (error) {
-    console.error(`[JOB] Error getting job ${jobId} for user ${userId}:`, error);
+    console.error(`[JOB] Error getting job ${jobId} for user ${userId || 'authenticated'}:`, error);
     return undefined;
   }
 }
@@ -291,13 +324,23 @@ export async function getAllJobs(): Promise<DubbingJob[]> {
 
 /**
  * Get all jobs for a specific user
+ * @param userId User ID (deprecated - use token instead)
+ * @param token Optional auth token - if provided, uses authenticated client to get userId from auth context
  */
-export async function getJobsByUser(userId: string): Promise<DubbingJob[]> {
+export async function getJobsByUser(
+  userId?: string,
+  token?: string
+): Promise<DubbingJob[]> {
   try {
-    const jobs = await convex.query(api.jobs.getUserJobs, { userId });
+    // Use authenticated client if token is provided, otherwise use global client
+    const client = token ? getConvexClientWithAuth(token) : convex;
+    
+    const jobs = await client.query(api.jobs.getUserJobs, { 
+      userId: token ? undefined : userId // Don't pass userId if using token (let Convex get it from auth)
+    });
     return jobs.map((job: any) => convertConvexJobToDubbingJob(job, job._id));
   } catch (error) {
-    console.error(`[JOB] Error getting jobs for user ${userId}:`, error);
+    console.error(`[JOB] Error getting jobs for user ${userId || 'authenticated'}:`, error);
     return [];
   }
 }
@@ -356,12 +399,22 @@ export async function deleteJob(jobId: string): Promise<void> {
 
 /**
  * Delete a job for a specific user (with ownership check)
+ * @param jobId Job ID
+ * @param userId User ID (deprecated - use token instead)
+ * @param token Optional auth token - if provided, uses authenticated client to get userId from auth context
  */
-export async function deleteJobForUser(jobId: string, userId: string): Promise<boolean> {
+export async function deleteJobForUser(
+  jobId: string, 
+  userId?: string,
+  token?: string
+): Promise<boolean> {
   try {
-    const result = await convex.mutation(api.jobs.deleteJob, { 
+    // Use authenticated client if token is provided, otherwise use global client
+    const client = token ? getConvexClientWithAuth(token) : convex;
+    
+    const result = await client.mutation(api.jobs.deleteJob, { 
       jobId: jobId as Id<"jobs">,
-      userId,
+      userId: token ? undefined : userId, // Don't pass userId if using token (let Convex get it from auth)
     });
 
     if (result.success && result.files) {
@@ -465,6 +518,12 @@ async function processJob(jobId: Id<"jobs">): Promise<void> {
   console.log(`[JOB] ${jobId}: Starting processing...`);
   const startTime = Date.now();
 
+  // Store userId early for use in error handler
+  const userId = job.userId;
+  
+  // Store job directory path for cleanup
+  const jobDir = path.dirname(job.files.subtitle);
+
   // Reserve credits before processing starts
   let reservedAmount = 0;
   let creditsReserved = false;
@@ -479,7 +538,7 @@ async function processJob(jobId: Id<"jobs">): Promise<void> {
     const estimatedCredits = segments.length; // Conservative: 1 credit per segment
     
     // Reserve credits
-    creditsReserved = await reserveCreditsForJob(job.userId, jobId, estimatedCredits);
+    creditsReserved = await reserveCreditsForJob(userId, jobId, estimatedCredits);
     reservedAmount = estimatedCredits;
     
     if (!creditsReserved) {
@@ -496,7 +555,7 @@ async function processJob(jobId: Id<"jobs">): Promise<void> {
 
     // Import modules dynamically to avoid circular dependencies
     const { generateTTSWithTiming } = await import('./tts-generator');
-    const { applySidechainCompression, convertToMP3 } = await import('./audio-processor');
+    const { applySidechainCompression } = await import('./audio-processor');
 
     // Refresh job data
     const allJobs = await convex.query(api.jobs.getUserJobs, { userId: job.userId });
@@ -515,7 +574,7 @@ async function processJob(jobId: Id<"jobs">): Promise<void> {
     // Generate TTS audio with timing
     await updateJobStatus(jobId, 'processing', 20);
     console.log(`[JOB] ${jobId}: Starting TTS generation for ${segments.length} segments...`);
-    const ttsAudioPath = path.join(outputDir, 'tts_audio.mp3');
+    const ttsAudioPath = path.join(outputDir, 'tts_audio.wav');
     const creditUsage = await generateTTSWithTiming(
       segments,
       ttsAudioPath,
@@ -537,26 +596,13 @@ async function processJob(jobId: Id<"jobs">): Promise<void> {
     job = updatedJobs.find((j: any) => j._id === jobId);
     if (!job) throw new Error('Job not found');
 
-    // Convert original audio to MP3 if needed
+    // Apply sidechain compression to merge audio (using original audio directly)
     await updateJobStatus(jobId, 'processing', 65);
-    const originalAudioPath = job.files.originalAudio;
-    const convertedAudioPath = path.join(outputDir, 'original_converted.mp3');
-    
-    if (!originalAudioPath.toLowerCase().endsWith('.mp3')) {
-      console.log(`[JOB] ${jobId}: Converting audio to MP3: ${originalAudioPath}`);
-      await convertToMP3(originalAudioPath, convertedAudioPath);
-    } else {
-      console.log(`[JOB] ${jobId}: Audio already MP3, copying: ${originalAudioPath}`);
-      // Copy if already MP3
-      await fs.copyFile(originalAudioPath, convertedAudioPath);
-    }
-
-    // Apply sidechain compression to merge audio
-    await updateJobStatus(jobId, 'processing', 75);
     console.log(`[JOB] ${jobId}: Applying sidechain compression...`);
-    const mergedAudioPath = path.join(outputDir, 'merged_audio.mp3');
+    const originalAudioPath = job.files.originalAudio;
+    const mergedAudioPath = path.join(outputDir, 'merged_audio.flac');
     await applySidechainCompression(
-      convertedAudioPath,
+      originalAudioPath,
       ttsAudioPath,
       mergedAudioPath
     );
@@ -586,7 +632,7 @@ async function processJob(jobId: Id<"jobs">): Promise<void> {
       // Delete local output files after successful upload
       try {
         await fs.unlink(ttsAudioPath);
-        //await fs.unlink(mergedAudioPath);
+        await fs.unlink(mergedAudioPath);
         console.log(`[JOB] ${jobId}: Deleted local output files after CDN upload`);
       } catch (cleanupError) {
         console.warn(`[JOB] ${jobId}: Failed to delete local files after upload:`, cleanupError);
@@ -601,13 +647,6 @@ async function processJob(jobId: Id<"jobs">): Promise<void> {
       }
     }
 
-    // Clean up converted audio
-    try {
-      await fs.unlink(convertedAudioPath);
-      console.log(`[JOB] ${jobId}: Cleaned up temporary audio: ${convertedAudioPath}`);
-    } catch (error) {
-      console.log(`[JOB] ${jobId}: No temporary audio to clean up`);
-    }
 
     // Finalize credits (deduct actual amount used)
     await finalizeCreditsForJob(
@@ -631,7 +670,7 @@ async function processJob(jobId: Id<"jobs">): Promise<void> {
     // Release reserved credits if job failed
     if (creditsReserved && reservedAmount > 0) {
       await finalizeCreditsForJob(
-        job.userId,
+        userId,
         jobId,
         reservedAmount,
         null,
@@ -647,6 +686,14 @@ async function processJob(jobId: Id<"jobs">): Promise<void> {
       undefined,
       error instanceof Error ? error.message : 'Unknown error'
     );
+  } finally {
+    // Clean up entire job directory to save space
+    try {
+      await cleanupTempDir(jobDir);
+      console.log(`[JOB] ${jobId}: Cleaned up job directory: ${jobDir}`);
+    } catch (cleanupError) {
+      console.error(`[JOB] ${jobId}: Error cleaning up job directory:`, cleanupError);
+    }
   }
 }
 
