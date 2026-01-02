@@ -8,8 +8,8 @@ echo "Injecting runtime environment variables..."
 
 # Find all JS files in .next and replace placeholders
 find /app/.next -type f -name "*.js" -exec sed -i \
-  -e "s|__NEXT_PUBLIC_CONVEX_URL_PLACEHOLDER__|${NEXT_PUBLIC_CONVEX_URL:-}|g" \
-  -e "s|__NEXT_PUBLIC_API_URL_PLACEHOLDER__|${NEXT_PUBLIC_API_URL:-}|g" \
+  -e "s|https://PLACEHOLDER_CONVEX_URL.convex.cloud|${NEXT_PUBLIC_CONVEX_URL:-https://PLACEHOLDER_CONVEX_URL.convex.cloud}|g" \
+  -e "s|https://PLACEHOLDER_API_URL.example.com|${NEXT_PUBLIC_API_URL:-https://PLACEHOLDER_API_URL.example.com}|g" \
   {} +
 
 echo "Environment variables injected successfully"

@@ -11,8 +11,9 @@ WORKDIR /app
 
 # Use placeholder values for NEXT_PUBLIC_ environment variables at build time
 # These will be replaced at runtime by docker-entrypoint.sh
-ENV NEXT_PUBLIC_CONVEX_URL=__NEXT_PUBLIC_CONVEX_URL_PLACEHOLDER__
-ENV NEXT_PUBLIC_API_URL=__NEXT_PUBLIC_API_URL_PLACEHOLDER__
+# Using valid URL format to pass build-time validation
+ENV NEXT_PUBLIC_CONVEX_URL=https://PLACEHOLDER_CONVEX_URL.convex.cloud
+ENV NEXT_PUBLIC_API_URL=https://PLACEHOLDER_API_URL.example.com
 
 # Copy package files
 COPY package.json package-lock.json* ./
