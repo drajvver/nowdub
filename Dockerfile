@@ -1,5 +1,5 @@
 # Stage 1: Build stage
-FROM node:20-slim AS builder
+FROM node:22-slim AS builder
 
 # Install FFmpeg (needed for build-time checks)
 RUN apt-get update && apt-get install -y \
@@ -28,7 +28,7 @@ COPY . .
 RUN npm run build
 
 # Stage 2: Production stage
-FROM node:20-slim AS runner
+FROM node:22-slim AS runner
 
 # Install FFmpeg (required at runtime for audio processing)
 RUN apt-get update && apt-get install -y \
@@ -48,11 +48,11 @@ RUN groupadd -r nodejs && useradd -r -g nodejs -m -d /home/nodejs nodejs
 COPY package.json package-lock.json* ./
 
 # Install production dependencies
-RUN npm ci --only=production && npm cache clean --force
+RUN npm ci && npm cache clean --force
 
 # Install TypeScript as a production dependency (Next.js needs it at runtime for next.config.ts)
 # We install it separately to ensure it's available even though it's technically a dev tool
-RUN npm install typescript@^5 --no-save && npm cache clean --force
+RUN npm install -g typescript && npm cache clean --force
 
 # Copy built application from builder stage
 COPY --from=builder /app/.next ./.next
