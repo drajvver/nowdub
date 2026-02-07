@@ -32,11 +32,6 @@ function getInfluxClient(): InfluxDB {
     influxClient = new InfluxDB({ url: INFLUX_URL, token: INFLUX_TOKEN });
   }
 
-  console.log('InfluxDB client: ', INFLUX_URL);
-  console.log('InfluxDB token: ', INFLUX_TOKEN);
-  console.log('InfluxDB org: ', INFLUX_ORG);
-  console.log('InfluxDB bucket: ', INFLUX_BUCKET);
-
   return influxClient;
 }
 
